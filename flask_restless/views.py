@@ -953,7 +953,7 @@ class API(ModelView):
 
         inst = get_by(self.session, self.model, instid, self.primary_key, self.licensee)
         if inst is None:
-            return {_STATUS: 404}, 404
+            abort(404)
         return self._inst_to_dict(inst)
 
     def _search(self):
@@ -1127,7 +1127,7 @@ class API(ModelView):
         # get the instance of the "main" model whose ID is instid
         instance = get_by(self.session, self.model, instid, self.primary_key, self.licensee)
         if instance is None:
-            return {_STATUS: 404}, 404
+            abort(404)
         # If no relation is requested, just return the instance. Otherwise,
         # get the value of the relation specified by `relationname`.
         if relationname is None:
@@ -1142,7 +1142,7 @@ class API(ModelView):
                 related_value_instance = get_by(self.session, related_model,
                                                 relationinstid)
                 if related_value_instance is None:
-                    return {_STATUS: 404}, 404
+                    abort(404)
                 result = to_dict(related_value_instance, deep)
             else:
                 # for security purposes, don't transmit list as top-level JSON
@@ -1151,7 +1151,7 @@ class API(ModelView):
                 else:
                     result = to_dict(related_value, deep)
         if result is None:
-            return {_STATUS: 404}, 404
+            abort(404)
         for postprocessor in self.postprocessors['GET_SINGLE']:
             postprocessor(result=result)
         return result
@@ -1215,7 +1215,7 @@ class API(ModelView):
         self.session.commit()
         for postprocessor in self.postprocessors['DELETE']:
             postprocessor(was_deleted=was_deleted)
-        return {}, 204 if was_deleted else 404
+        return {}, 204 if was_deleted else abort(404)
 
     def post(self):
         """Creates a new instance of a given model based on request data.
@@ -1435,7 +1435,7 @@ class API(ModelView):
                                          self.licensee, self.primary_key)
 
             if query.count() == 0:
-                return {_STATUS: 404}, 404
+                abort(404)
             assert query.count() == 1, 'Multiple rows with same ID'
 
 
