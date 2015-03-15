@@ -33,6 +33,9 @@ from sqlalchemy.sql.expression import _BinaryExpression
 from sqlalchemy.sql.expression import ColumnElement
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 
+from geoalchemy2.elements import WKBElement
+import geoalchemy2.functions as geofunc
+
 #: Names of attributes which should definitely not be considered relations when
 #: dynamically computing a list of relations of a SQLAlchemy model.
 RELATION_BLACKLIST = ('query', 'query_class', '_sa_class_manager',
