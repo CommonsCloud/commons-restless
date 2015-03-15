@@ -339,7 +339,10 @@ def to_dict(instance, deep=None, exclude=None, include=None,
     # default. Convert datetime objects to ISO 8601 format, convert UUID
     # objects to hexadecimal strings, etc.
     for key, value in result.items():
-        if isinstance(value, (datetime.date, datetime.time)):
+        if isinstance(value, WKBElement):
+            print 'We need to convert to GeoJSON here', value
+            result[key] = None
+        elif isinstance(value, (datetime.date, datetime.time)):
             result[key] = value.isoformat()
         elif isinstance(value, uuid.UUID):
             result[key] = str(value)
