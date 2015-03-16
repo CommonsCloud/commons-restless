@@ -11,6 +11,7 @@
 import datetime
 import inspect
 import uuid
+import json
 
 from dateutil.parser import parse as parse_datetime
 from sqlalchemy import Date
@@ -35,6 +36,8 @@ from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 
 from geoalchemy2.elements import WKBElement
 import geoalchemy2.functions as geofunc
+
+from geomet import wkb
 
 #: Names of attributes which should definitely not be considered relations when
 #: dynamically computing a list of relations of a SQLAlchemy model.
@@ -269,7 +272,7 @@ def is_mapped_class(cls):
 # http://stackoverflow.com/q/1958219/108197.
 def to_dict(instance, deep=None, exclude=None, include=None,
             exclude_relations=None, include_relations=None,
-            include_methods=None):
+            include_methods=None, session=None):
     """Returns a dictionary representing the fields of the specified `instance`
     of a SQLAlchemy model.
 
@@ -343,8 +346,9 @@ def to_dict(instance, deep=None, exclude=None, include=None,
     # objects to hexadecimal strings, etc.
     for key, value in result.items():
         if isinstance(value, WKBElement):
-            print 'We need to convert to GeoJSON here', value
-            result[key] = None
+            # print 'We need to convert to GeoJSON here', session.scalar(geofunc.ST_AsGeoJSON(value)), value
+            # print 'wkb.loads(value)', wkb.loads(value)
+            result[key] = json.loads(session.scalar(geofunc.ST_AsGeoJSON(value)))
         elif isinstance(value, (datetime.date, datetime.time)):
             result[key] = value.isoformat()
         elif isinstance(value, uuid.UUID):

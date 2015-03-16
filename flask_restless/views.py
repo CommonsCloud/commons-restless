@@ -901,7 +901,8 @@ class API(ModelView):
                            exclude_relations=self.exclude_relations,
                            include=self.include_columns,
                            include_relations=self.include_relations,
-                           include_methods=self.include_methods)
+                           include_methods=self.include_methods,
+                           session=self.session)
                    for x in instances[start:end]]
         return dict(page=page_num, objects=objects, total_pages=total_pages,
                     num_results=num_results)
@@ -927,7 +928,8 @@ class API(ModelView):
                        exclude_relations=self.exclude_relations,
                        include=self.include_columns,
                        include_relations=self.include_relations,
-                       include_methods=self.include_methods)
+                       include_methods=self.include_methods,
+                       session=self.session)
 
     def _instid_to_dict(self, instid):
         """Returns the dictionary representation of the instance specified by
@@ -953,6 +955,7 @@ class API(ModelView):
 
         inst = get_by(self.session, self.model, instid, self.primary_key, self.licensee)
         if inst is None:
+            # return {_STATUS: 404}, 404
             abort(404)
         return self._inst_to_dict(inst)
 
@@ -1080,7 +1083,8 @@ class API(ModelView):
                              exclude_relations=self.exclude_relations,
                              include=self.include_columns,
                              include_relations=self.include_relations,
-                             include_methods=self.include_methods)
+                             include_methods=self.include_methods,
+                             session=self.session)
             # The URL at which a client can access the instance matching this
             # search query.
             url = '{0}/{1}'.format(request.base_url, result[primary_key])
@@ -1127,6 +1131,7 @@ class API(ModelView):
         # get the instance of the "main" model whose ID is instid
         instance = get_by(self.session, self.model, instid, self.primary_key, self.licensee)
         if instance is None:
+            # return {_STATUS: 404}, 404
             abort(404)
         # If no relation is requested, just return the instance. Otherwise,
         # get the value of the relation specified by `relationname`.
@@ -1142,15 +1147,19 @@ class API(ModelView):
                 related_value_instance = get_by(self.session, related_model,
                                                 relationinstid)
                 if related_value_instance is None:
+                    # return {_STATUS: 404}, 404
                     abort(404)
-                result = to_dict(related_value_instance, deep)
+                result = to_dict(related_value_instance, deep,
+                           session=self.session)
             else:
                 # for security purposes, don't transmit list as top-level JSON
                 if is_like_list(instance, relationname):
                     result = self._paginated(list(related_value), deep)
                 else:
-                    result = to_dict(related_value, deep)
+                    result = to_dict(related_value, deep,
+                               session=self.session)
         if result is None:
+            # return {_STATUS: 404}, 404
             abort(404)
         for postprocessor in self.postprocessors['GET_SINGLE']:
             postprocessor(result=result)
@@ -1435,6 +1444,7 @@ class API(ModelView):
                                          self.licensee, self.primary_key)
 
             if query.count() == 0:
+                # return {_STATUS: 404}, 404
                 abort(404)
             assert query.count() == 1, 'Multiple rows with same ID'
 
