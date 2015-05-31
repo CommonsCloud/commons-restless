@@ -8,6 +8,7 @@
     :license: GNU AGPLv3+ or BSD
 
 """
+import copy
 import datetime
 import inspect
 import uuid
