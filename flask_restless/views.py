@@ -904,9 +904,16 @@ class API(ModelView):
                            include_methods=self.include_methods,
                            session=self.session)
                    for x in instances[start:end]]
-        return dict(page=page_num, objects=objects, total_pages=total_pages,
-                    num_results=num_results)
 
+        properties = {
+            "page": page_num,
+            "total_pages": total_pages,
+            "num_results": num_results
+        }
+
+        return dict(type="FeatureCollection", features=objects,
+                    properties=properties)
+        
     def _inst_to_dict(self, inst):
         """Returns the dictionary representation of the specified instance.
 
