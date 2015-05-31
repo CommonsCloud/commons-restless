@@ -380,7 +380,8 @@ def to_dict(instance, deep=None, exclude=None, include=None,
         if is_like_list(instance, relation):
             result[relation] = [to_dict(inst, rdeep, exclude=newexclude,
                                         include=newinclude,
-                                        include_methods=newmethods)
+                                        include_methods=newmethods,
+                                        session=session)
                                 for inst in relatedvalue]
             continue
         # If the related value is dynamically loaded, resolve the query to get
@@ -389,7 +390,8 @@ def to_dict(instance, deep=None, exclude=None, include=None,
             relatedvalue = relatedvalue.one()
         result[relation] = to_dict(relatedvalue, rdeep, exclude=newexclude,
                                    include=newinclude,
-                                   include_methods=newmethods)
+                                   include_methods=newmethods,
+                                   session=session)
 
     """
     Since we are producing GeoJSON instead of regular JSON we need to add
