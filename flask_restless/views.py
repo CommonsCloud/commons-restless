@@ -913,7 +913,7 @@ class API(ModelView):
 
         return dict(type="FeatureCollection", features=objects,
                     properties=properties)
-        
+
     def _inst_to_dict(self, inst):
         """Returns the dictionary representation of the specified instance.
 
@@ -1080,7 +1080,7 @@ class API(ModelView):
             #
             # TODO We are already calling self._compute_results_per_page() once
             # in _paginated(); don't compute it again here.
-            page, last_page = result['page'], result['total_pages']
+            page, last_page = result['properties']['page'], result['properties']['total_pages']
             linkstring = create_link_string(page, last_page,
                                             self._compute_results_per_page())
             headers = dict(Link=linkstring)
