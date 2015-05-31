@@ -37,8 +37,6 @@ from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 from geoalchemy2.elements import WKBElement
 import geoalchemy2.functions as geofunc
 
-from geomet import wkb
-
 #: Names of attributes which should definitely not be considered relations when
 #: dynamically computing a list of relations of a SQLAlchemy model.
 RELATION_BLACKLIST = ('query', 'query_class', '_sa_class_manager',
@@ -391,7 +389,31 @@ def to_dict(instance, deep=None, exclude=None, include=None,
         result[relation] = to_dict(relatedvalue, rdeep, exclude=newexclude,
                                    include=newinclude,
                                    include_methods=newmethods)
-    return result
+
+    """
+    Since we are producing GeoJSON instead of regular JSON we need to add
+    a `type` and a `properties` field to the object
+    """
+
+    #
+    # Must use copy here, otherwise when we delete it, this variable will
+    # emptied out as well.
+    #
+    # @see https://docs.python.org/2/library/copy.html
+    #
+    if 'geometry' in result:
+        geometry = copy.deepcopy(result['geometry'])
+        result.pop('geometry', None)
+    else:
+        geometry = None
+
+    feature = {
+        'geometry': geometry,
+        'properties': result,
+        'type': 'Feature'
+    }
+
+    return feature
 
 
 def evaluate_functions(session, model, functions):
