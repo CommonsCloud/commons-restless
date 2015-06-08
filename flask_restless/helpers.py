@@ -411,6 +411,7 @@ def to_dict(instance, deep=None, exclude=None, include=None,
         geometry = None
 
     feature = {
+        'id': result.get('id'),
         'geometry': geometry,
         'properties': result,
         'type': 'Feature'
