@@ -423,7 +423,8 @@ class FunctionAPI(ModelView):
             return dict(message='Unable to decode data'), 400
         try:
             result = evaluate_functions(self.session, self.model,
-                                        data.get('functions', []))
+                                        data.get('functions', []),
+                                        data.get('filters', []))
             if not result:
                 return {}, 204
             return result
