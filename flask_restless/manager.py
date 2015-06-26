@@ -462,10 +462,12 @@ class APIManager(object):
         # which responds only to GET requests and responds with the result of
         # evaluating functions on all instances of the specified model
         if allow_functions:
-            eval_api_name = apiname + 'eval'
+            eval_api_name = apiname + 'stat'
             eval_api_view = FunctionAPI.as_view(eval_api_name, self.session,
                                                 model)
-            eval_endpoint = '/eval' + collection_endpoint
+            collection_endpoint = collection_endpoint.replace('data/', '')
+            eval_endpoint = '/stat' + collection_endpoint
+
             blueprint.add_url_rule(eval_endpoint, methods=['GET'],
                                    view_func=eval_api_view)
         return blueprint
