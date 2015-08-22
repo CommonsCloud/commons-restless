@@ -29,6 +29,7 @@ from .helpers import session_query
 from .helpers import get_related_association_proxy_model
 from .helpers import primary_key_names
 
+import geoalchemy2.functions as geofunc
 
 def _sub_operator(model, argument, fieldname):
     """Recursively calls :func:`QueryBuilder._create_operation` when argument
@@ -109,6 +110,7 @@ OPERATORS = {
     # Operators which accept three arguments.
     'has': lambda f, a, fn: f.has(_sub_operator(f, a, fn)),
     'any': lambda f, a, fn: f.any(_sub_operator(f, a, fn)),
+    'intersects': lambda f, a: geofunc.ST_Intersects(f, a),
 }
 
 
