@@ -21,7 +21,7 @@ from flask import json
 from flask import request
 
 from sqlalchemy import and_ as AND
-from sqlalchemy import or_
+from sqlalchemy import or_ as OR
 from sqlalchemy.ext.associationproxy import AssociationProxy
 from sqlalchemy.orm.attributes import InstrumentedAttribute
 
