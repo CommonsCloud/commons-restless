@@ -111,7 +111,7 @@ OPERATORS = {
     'has': lambda f, a, fn: f.has(_sub_operator(f, a, fn)),
     'any': lambda f, a, fn: f.any(_sub_operator(f, a, fn)),
     'intersects': lambda f, a: geofunc.ST_Intersects(f, a),
-    'dwithin': lambda f, a: geofunc.ST_DWithin(f, a),
+    'dwithin': lambda f, a: geofunc.ST_DWithin(f, a['geometry'], a['distance_of_srid']),
 }
 
 
