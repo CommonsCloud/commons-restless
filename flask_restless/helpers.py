@@ -339,10 +339,20 @@ def to_dict(instance, deep=None, exclude=None, include=None,
     result = dict((col, getattr(instance, col)) for col in columns
                   if not (col.startswith('__') or col in COLUMN_BLACKLIST))
     # add any included methods
+
     if include_methods is not None:
-        result.update(dict((method, getattr(instance, method)())
-                           for method in include_methods
-                           if not '.' in method))
+        for method in include_methods:
+            if '.' not in method:
+                value = getattr(instance, method)
+                # Allow properties and static attributes in include_methods
+                if callable(value):
+                    value = value()
+                result[method] = value
+
+    # if include_methods is not None:
+    #     result.update(dict((method, getattr(instance, method)())
+    #                        for method in include_methods
+    #                        if not '.' in method))
     # Check for objects in the dictionary that may not be serializable by
     # default. Convert datetime objects to ISO 8601 format, convert UUID
     # objects to hexadecimal strings, etc.
