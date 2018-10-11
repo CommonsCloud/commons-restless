@@ -357,16 +357,17 @@ def to_dict(instance, deep=None, exclude=None, include=None,
     # default. Convert datetime objects to ISO 8601 format, convert UUID
     # objects to hexadecimal strings, etc.
     for key, value in result.items():
-        if isinstance(value, WKBElement):
-            # print 'We need to convert to GeoJSON here', session.scalar(geofunc.ST_AsGeoJSON(value)), value
-            # print 'wkb.loads(value)', wkb.loads(value)
-            result[key] = json.loads(session.scalar(geofunc.ST_AsGeoJSON(value)))
-        elif isinstance(value, (datetime.date, datetime.time)):
-            result[key] = value.isoformat()
-        elif isinstance(value, uuid.UUID):
-            result[key] = str(value)
-        elif key not in column_attrs and is_mapped_class(type(value)):
-            result[key] = to_dict(value)
+        if "password" != key:
+            if isinstance(value, WKBElement):
+                # print 'We need to convert to GeoJSON here', session.scalar(geofunc.ST_AsGeoJSON(value)), value
+                # print 'wkb.loads(value)', wkb.loads(value)
+                result[key] = json.loads(session.scalar(geofunc.ST_AsGeoJSON(value)))
+            elif isinstance(value, (datetime.date, datetime.time)):
+                result[key] = value.isoformat()
+            elif isinstance(value, uuid.UUID):
+                result[key] = str(value)
+            elif key not in column_attrs and is_mapped_class(type(value)):
+                result[key] = to_dict(value)
     # recursively call _to_dict on each of the `deep` relations
     deep = deep or {}
     for relation, rdeep in deep.items():
