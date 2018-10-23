@@ -359,8 +359,11 @@ def to_dict(instance, deep=None, exclude=None, include=None,
     for key, value in result.items():
         if "password" == key:
             del result["password"]
+        elif "current_login_ip" == key:
             del result["current_login_ip"]
+        elif "last_login_ip" == key:
             del result["last_login_ip"]
+        elif "email" == key:
             del result["email"]
         else:
             if isinstance(value, WKBElement):
