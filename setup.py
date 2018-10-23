@@ -35,17 +35,13 @@ setup(
         'Operating System :: OS Independent',
         'Programming Language :: Python',
         'Programming Language :: Python :: 2',
-        'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
-        'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.3',
-        'Programming Language :: Python :: 3.4',
         'Topic :: Database :: Front-Ends',
         'Topic :: Internet :: WWW/HTTP',
         'Topic :: Software Development :: Libraries :: Python Modules'
     ],
     description='A Flask extension for easy ReSTful API generation',
-    download_url='http://pypi.python.org/pypi/Flask-Restless',
+    download_url='https://github.com/viableindustries/viable-flask-restless',
     install_requires=requirements,
     include_package_data=True,
     keywords=['ReST', 'API', 'Flask'],
@@ -56,7 +52,7 @@ setup(
     packages=['flask_restless'],
     test_suite='nose.collector',
     tests_require=['nose'],
-    url='http://github.com/jfinkels/flask-restless',
-    version='0.15.2-dev',
+    url='https://github.com/viableindustries/viable-flask-restless',
+    version='0.15.4',
     zip_safe=False
 )
