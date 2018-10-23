@@ -357,7 +357,9 @@ def to_dict(instance, deep=None, exclude=None, include=None,
     # default. Convert datetime objects to ISO 8601 format, convert UUID
     # objects to hexadecimal strings, etc.
     for key, value in result.items():
-        if "password" != key:
+        if "password" == key:
+            del result["password"]
+        else:
             if isinstance(value, WKBElement):
                 # print 'We need to convert to GeoJSON here', session.scalar(geofunc.ST_AsGeoJSON(value)), value
                 # print 'wkb.loads(value)', wkb.loads(value)
