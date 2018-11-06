@@ -53,6 +53,6 @@ setup(
     test_suite='nose.collector',
     tests_require=['nose'],
     url='https://github.com/viableindustries/viable-flask-restless',
-    version='0.15.4',
+    version='0.15.5',
     zip_safe=False
 )
