@@ -363,8 +363,6 @@ def to_dict(instance, deep=None, exclude=None, include=None,
             del result["current_login_ip"]
         elif "last_login_ip" == key:
             del result["last_login_ip"]
-        elif "email" == key:
-            del result["email"]
         else:
             if isinstance(value, WKBElement):
                 # print 'We need to convert to GeoJSON here', session.scalar(geofunc.ST_AsGeoJSON(value)), value
