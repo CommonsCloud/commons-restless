@@ -15,8 +15,6 @@
 """
 import inspect
 
-from types import ClassType
-
 from flask import json
 from flask import request
 
