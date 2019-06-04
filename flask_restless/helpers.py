@@ -356,7 +356,7 @@ def to_dict(instance, deep=None, exclude=None, include=None,
     # Check for objects in the dictionary that may not be serializable by
     # default. Convert datetime objects to ISO 8601 format, convert UUID
     # objects to hexadecimal strings, etc.
-    for key, value in result.items():
+    for key, value in list(result.items()):
         if "password" == key:
             del result["password"]
         elif "current_login_ip" == key:
