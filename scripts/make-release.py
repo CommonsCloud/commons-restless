@@ -47,7 +47,7 @@ def parse_changelog():
             match = re.search('^Version\s+(.*)', line.strip())
             if match is None:
                 continue
-            # length = len(match.group(1))
+            #length = len(match.group(1))
             version = match.group(1).strip()
             if lineiter.next().count('-') != len(match.group(0)):
                 continue
@@ -86,7 +86,6 @@ def parse_date(string):
 
 def set_filename_version(filename, version_number, pattern):
     changed = []
-
     def inject_version(match):
         before, old, after = match.groups()
         changed.append(True)
@@ -112,26 +111,8 @@ def set_setup_version(version):
     set_filename_version('setup.py', version, 'version')
 
 
-def build():
-    Popen([sys.executable, 'setup.py', 'sdist', 'bdist_wheel']).wait()
-
-
-def sign(version):
-    bdist_wheel = 'dist/Flask_Restless-{0}-py2.py3-none-any.whl'
-    bdist_wheel = bdist_wheel.format(version)
-    sdist = 'dist/Flask-Restless-{0}.tar.gz'.format(version)
-    Popen(['gpg', '--detach-sign', '-a', bdist_wheel]).wait()
-    Popen(['gpg', '--detach-sign', '-a', sdist]).wait()
-
-
-def upload(version):
-    bdist_wheel = 'dist/Flask_Restless-{0}-py2.py3-none-any.whl'
-    bdist_wheel = bdist_wheel.format(version)
-    bdist_wheel_signature = '{0}.asc'.format(bdist_wheel)
-    sdist = 'dist/Flask-Restless-{0}.tar.gz'.format(version)
-    sdist_signature = '{0}.asc'.format(bdist_wheel)
-    files = [sdist, sdist_signature, bdist_wheel, bdist_wheel_signature]
-    Popen(['twine', 'upload'] + files).wait()
+def build_and_upload():
+    Popen([sys.executable, 'setup.py', 'release', 'sdist', 'upload', '--sign']).wait()
 
 
 def fail(message, *args):
@@ -186,14 +167,12 @@ def main():
         fail('You have uncommitted changes in git')
 
     set_init_version(version)
-    # set_setup_version(version)
+    set_setup_version(version)
     make_git_commit('Bump version number to %s', version)
     make_git_tag(version)
-    build()
-    sign(version)
-    upload(version)
+    build_and_upload()
     set_init_version(dev_version)
-    # set_setup_version(dev_version)
+    set_setup_version(dev_version)
     add_new_changelog_section(version, dev_version)
     make_git_commit('Set development version number to %s', dev_version)
     print('*************************************')
