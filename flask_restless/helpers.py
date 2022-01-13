@@ -592,7 +592,7 @@ def count(session, query):
     """
     counts = query.selectable.with_only_columns([func.count()])
     num_results = session.execute(counts.order_by(None)).scalar()
-    if num_results is None or query._limit:
+    if num_results is None or query.limit:
         return query.count()
     return num_results
 
