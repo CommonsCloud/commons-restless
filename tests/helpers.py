@@ -1,115 +1,230 @@
-"""
-    tests.helpers
-    ~~~~~~~~~~~~~
-
-    Provides helper functions for unit tests in this package.
-
-    :copyright: 2012 Jeffrey Finkelstein <jeffrey.finkelstein@gmail.com>
-    :license: GNU AGPLv3+ or BSD
-
-"""
+# helpers.py - helper functions for unit tests
+#
+# Copyright 2011 Lincoln de Sousa <lincoln@comum.org>.
+# Copyright 2012, 2013, 2014, 2015, 2016 Jeffrey Finkelstein
+#           <jeffrey.finkelstein@gmail.com> and contributors.
+#
+# This file is part of Flask-Restless.
+#
+# Flask-Restless is distributed under both the GNU Affero General Public
+# License version 3 and under the 3-clause BSD license. For more
+# information, see LICENSE.AGPL and LICENSE.BSD.
+"""Helper functions for unit tests."""
+from datetime import date
+from datetime import datetime
+from datetime import time
+from datetime import timedelta
+from functools import wraps
 import sys
-is_python_version_2 = sys.version_info[0] == 2
-
-if is_python_version_2:
-    import types
-
-    def isclass(obj):
-        return isinstance(obj, (types.TypeType, types.ClassType))
-else:
-    def isclass(obj):
-        return isinstance(obj, type)
-
-import datetime
+import types
+from unittest2 import skipUnless as skip_unless
+from unittest2 import TestCase
 import uuid
 
 from flask import Flask
-from nose import SkipTest
-from sqlalchemy import Boolean
-from sqlalchemy import Column
+from flask import json
+try:
+    import flask_sqlalchemy
+    from flask_sqlalchemy import SQLAlchemy
+except ImportError:
+    has_flask_sqlalchemy = False
+else:
+    has_flask_sqlalchemy = True
 from sqlalchemy import create_engine
-from sqlalchemy import Date
-from sqlalchemy import DateTime
 from sqlalchemy import event
-from sqlalchemy import Float
-from sqlalchemy import ForeignKey
-from sqlalchemy import Integer
-from sqlalchemy import Interval
-from sqlalchemy import select
-from sqlalchemy import Time
-from sqlalchemy import Unicode
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import backref
-from sqlalchemy.orm import relationship
 from sqlalchemy.orm import scoped_session
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.session import Session as SessionBase
 from sqlalchemy.types import CHAR
 from sqlalchemy.types import TypeDecorator
-from sqlalchemy.ext.associationproxy import association_proxy
 
-try:
-    from flask.ext import sqlalchemy as flask_sa
-except ImportError:
-    flask_sa = None
+from flask_restless import APIManager
+from flask_restless import collection_name
+from flask_restless import DefaultSerializer
+from flask_restless import DefaultDeserializer
+from flask_restless import DeserializationException
+from flask_restless import JSONAPI_MIMETYPE
+from flask_restless import model_for
+from flask_restless import primary_key_for
+from flask_restless import SerializationException
+from flask_restless import serializer_for
+from flask_restless import url_for
+
+dumps = json.dumps
+loads = json.loads
+
+#: The User-Agent string for Microsoft Internet Explorer 8.
+#:
+#: From <http://blogs.msdn.com/b/ie/archive/2008/02/21/
+#:       the-internet-explorer-8-user-agent-string.aspx>.
+MSIE8_UA = 'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.0; Trident/4.0)'
+
+#: The User-Agent string for Microsoft Internet Explorer 9.
+#:
+#: From <http://blogs.msdn.com/b/ie/archive/2010/03/23/
+#:       introducing-ie9-s-user-agent-string.aspx>.
+MSIE9_UA = 'Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; Trident/5.0)'
+
+#: Boolean representing whether this code is being executed on Python 2.
+IS_PYTHON2 = (sys.version_info[0] == 2)
+
+#: Tuple of objects representing types.
+CLASS_TYPES = (types.TypeType, types.ClassType) if IS_PYTHON2 else (type, )
+
+#: Global helper functions used by Flask-Restless
+GLOBAL_FUNCS = [model_for, url_for, collection_name, serializer_for,
+                primary_key_for]
 
 
-from flask.ext.restless import APIManager
+class raise_s_exception(DefaultSerializer):
+    """A serializer that unconditionally raises an exception when
+    either :meth:`.serialize` or :meth:`.serialize_many` is called.
 
-
-def skip_unless(condition, reason=None):
-    """Decorator that skips `test` unless `condition` is ``True``.
-
-    This is a replacement for :func:`unittest.skipUnless` that works with
-    ``nose``. The argument ``reason`` is a string describing why the test was
-    skipped.
+    This class is useful for tests of serialization exceptions.
 
     """
-    def skip(test):
-        message = 'Skipped {0}: {1}'.format(test.__name__, reason)
 
-        if isclass(test):
-            for attr, val in test.__dict__.items():
-                if callable(val) and not attr.startswith('__'):
-                    setattr(test, attr, skip(val))
-            return test
+    def serialize(self, instance, *args, **kw):
+        """Immediately raises a :exc:`SerializationException` with
+        access to the provided `instance` of a SQLAlchemy model.
 
-        def inner(*args, **kw):
-            if not condition:
-                raise SkipTest(message)
-            return test(*args, **kw)
-        inner.__name__ = test.__name__
-        return inner
+        """
+        raise SerializationException(instance)
 
-    return skip
+    def serialize_many(self, instances, *args, **kw):
+        """Immediately raises a :exc:`SerializationException`.
+
+        This function requires `instances` to be non-empty.
+
+        """
+        raise SerializationException(instances[0])
+
+
+class raise_d_exception(DefaultDeserializer):
+    """A deserializer that unconditionally raises an exception when
+    either :meth:`.deserialize` or :meth:`.deserialize_many` is called.
+
+    This class is useful for tests of deserialization exceptions.
+
+    """
+
+    def deserialize(self, *args, **kw):
+        """Immediately raises a :exc:`DeserializationException`."""
+        raise DeserializationException
+
+    def deserialize_many(self, *args, **kw):
+        """Immediately raises a :exc:`DeserializationException`."""
+        raise DeserializationException
+
+
+def isclass(obj):
+    """Returns ``True`` if and only if the specified object is a type (or a
+    class).
+
+    """
+    return isinstance(obj, CLASS_TYPES)
+
+
+def parse_version(version_string):
+    """Parses the Flask-SQLAlchemy version string into a pair of
+    integers.
+
+    """
+    # First, check for '-dev' suffix.
+    split_on_hyphen = version_string.split('-')
+    version_string = split_on_hyphen[0]
+    return tuple(int(n) for n in version_string.split('.'))
 
 
 def unregister_fsa_session_signals():
-    """
-    When Flask-SQLAlchemy object is created, it registers some
-    session signal handlers.
+    """Unregisters Flask-SQLAlchemy session commit and rollback signal
+    handlers.
 
-    In case of using both default SQLAlchemy session and Flask-SQLAlchemy
-    session (thats happening in tests), we need to unregister this handlers or
-    there will be some exceptions during test executions like:
+    When a Flask-SQLAlchemy object is created, it registers signal handlers for
+    ``before_commit``, ``after_commit``, and ``after_rollback`` signals. In
+    case of using both a plain SQLAlchemy session and a Flask-SQLAlchemy
+    session (as is happening in the tests in this package), we need to
+    unregister handlers or there will be some exceptions during test
+    executions like::
+
         AttributeError: 'Session' object has no attribute '_model_changes'
 
     """
-    if not flask_sa:
+    # We don't need to do this if Flask-SQLAlchemy is not installed.
+    if not has_flask_sqlalchemy:
         return
+    # We don't need to do this if Flask-SQLAlchemy version 2.0 or
+    # greater is installed.
+    version = parse_version(flask_sqlalchemy.__version__)
+    if version >= (2, 0):
+        return
+    events = flask_sqlalchemy._SessionSignalEvents
+    signal_names = ('before_commit', 'after_commit', 'after_rollback')
+    for signal_name in signal_names:
+        # For Flask-SQLAlchemy version less than 3.0.
+        signal = getattr(events, 'session_signal_{0}'.format(signal_name))
+        event.remove(SessionBase, signal_name, signal)
 
-    event.remove(SessionBase, 'before_commit',
-                 flask_sa._SessionSignalEvents.session_signal_before_commit)
-    event.remove(SessionBase, 'after_commit',
-                 flask_sa._SessionSignalEvents.session_signal_after_commit)
-    event.remove(SessionBase, 'after_rollback',
-                 flask_sa._SessionSignalEvents.session_signal_after_rollback)
+
+def check_sole_error(response, status, strings):
+    """Asserts that the response is an errors response with a single
+    error object whose detail message contains all of the given strings.
+
+    `strings` may also be a single string object to check.
+
+    `status` is the expected status code for the sole error object in
+    the response.
+
+    """
+    if isinstance(strings, str):
+        strings = [strings]
+    assert response.status_code == status
+    document = loads(response.data)
+    errors = document['errors']
+    assert len(errors) == 1
+    error = errors[0]
+    assert error['status'] == status
+    assert all(s in error['detail'] for s in strings)
 
 
-# This code adapted from
-# http://docs.sqlalchemy.org/en/rel_0_8/core/types.html#backend-agnostic-guid-type
+def force_content_type_jsonapi(test_client):
+    """Ensures that all requests made by the specified Flask test client
+    that include data have the correct :http:header:`Content-Type`
+    header.
+
+    """
+
+    def set_content_type(func):
+        """Returns a decorated version of ``func``, as described in the
+        wrapper defined below.
+
+        """
+
+        @wraps(func)
+        def new_func(*args, **kw):
+            """Sets the correct :http:header:`Content-Type` headers
+            before executing ``func(*args, **kw)``.
+
+            """
+            # if 'content_type' not in kw:
+            #     kw['content_type'] = CONTENT_TYPE
+            if 'headers' not in kw:
+                kw['headers'] = dict()
+            headers = kw['headers']
+            if 'content_type' not in kw and 'Content-Type' not in headers:
+                kw['content_type'] = JSONAPI_MIMETYPE
+            return func(*args, **kw)
+        return new_func
+
+    # Decorate the appropriate test client request methods.
+    test_client.patch = set_content_type(test_client.patch)
+    test_client.post = set_content_type(test_client.post)
+
+
+# This code is adapted from
+# http://docs.sqlalchemy.org/en/latest/core/custom_types.html#backend-agnostic-guid-type
 class GUID(TypeDecorator):
     """Platform-independent GUID type.
 
@@ -129,9 +244,9 @@ class GUID(TypeDecorator):
         if dialect.name == 'postgresql':
             return str(value)
         if not isinstance(value, uuid.UUID):
-            return '{0:.32x}'.format(uuid.UUID(value))
-        # hexstring
-        return '{0:.32x}'.format(value)
+            return uuid.UUID(value).hex
+        # If we get to this point, we assume `value` is a UUID object.
+        return value.hex
 
     def process_result_value(self, value, dialect):
         if value is None:
@@ -139,7 +254,25 @@ class GUID(TypeDecorator):
         return uuid.UUID(value)
 
 
-class FlaskTestBase(object):
+# In versions of Flask before 0.11, datetime and time objects are not
+# serializable by default so we need to create a custom JSON encoder class.
+#
+# TODO When Flask 0.11 is required, remove this.
+class BetterJSONEncoder(json.JSONEncoder):
+    """Extends the default JSON encoder to serialize objects from the
+    :mod:`datetime` module.
+
+    """
+
+    def default(self, obj):
+        if isinstance(obj, (date, datetime, time)):
+            return obj.isoformat()
+        if isinstance(obj, timedelta):
+            return int(obj.days * 86400 + obj.seconds)
+        return super(BetterJSONEncoder, self).default(obj)
+
+
+class FlaskTestBase(TestCase):
     """Base class for tests which use a Flask application.
 
     The Flask test client can be accessed at ``self.app``. The Flask
@@ -153,272 +286,136 @@ class FlaskTestBase(object):
         app = Flask(__name__)
         app.config['DEBUG'] = True
         app.config['TESTING'] = True
-        app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite://'
+        # The SERVER_NAME is required by `manager.url_for()` in order to
+        # construct absolute URLs.
+        app.config['SERVER_NAME'] = 'localhost:5000'
         app.logger.disabled = True
         self.flaskapp = app
 
         # create the test client
         self.app = app.test_client()
 
-        # Ensure that all requests have Content-Type set to "application/json"
-        # unless otherwise specified.
-        for methodname in ('get', 'put', 'patch', 'post', 'delete'):
-            # Create a decorator for the test client request methods that adds
-            # a JSON Content-Type by default if none is specified.
-            def set_content_type(func):
-                def new_func(*args, **kw):
-                    if 'content_type' not in kw:
-                        kw['content_type'] = 'application/json'
-                    return func(*args, **kw)
-                return new_func
-            # Decorate the original test client request method.
-            old_method = getattr(self.app, methodname)
-            setattr(self.app, methodname, set_content_type(old_method))
+        force_content_type_jsonapi(self.app)
 
 
-class DatabaseTestBase(FlaskTestBase):
-    """Base class for tests which use a database and have an
-    :class:`flask_restless.APIManager`.
+class DatabaseMixin(object):
+    """A class that accesses a database via a connection URI.
 
-    The :meth:`setUp` method does the necessary SQLAlchemy initialization, and
-    the subclasses should populate the database with models and then create the
-    database (by calling ``self.Base.metadata.create_all()``).
+    Subclasses can override the :meth:`database_uri` method to return a
+    connection URI for the desired database backend.
 
-    The :class:`flask_restless.APIManager` is accessible at ``self.manager``.
+    """
+
+    def database_uri(self):
+        """The database connection URI to use for the SQLAlchemy engine.
+
+        By default, this returns the URI for the SQLite in-memory
+        database. Subclasses that wish to use a different SQL backend
+        should override this method so that it returns the desired URI
+        string.
+
+        """
+        return 'sqlite://'
+
+
+@skip_unless(has_flask_sqlalchemy, 'Flask-SQLAlchemy not found')
+class FlaskSQLAlchemyTestBase(FlaskTestBase, DatabaseMixin):
+    """Base class for tests that use Flask-SQLAlchemy (instead of plain
+    old SQLAlchemy).
+
+    If Flask-SQLAlchemy is not installed, the :meth:`.setUp` method will
+    raise :exc:`nose.SkipTest`, so that each test method will be
+    skipped individually.
+
+    """
+
+    def setUp(self):
+        super(FlaskSQLAlchemyTestBase, self).setUp()
+        # if not has_flask_sqlalchemy:
+        #     raise SkipTest('Flask-SQLAlchemy not found.')
+        self.flaskapp.config['SQLALCHEMY_DATABASE_URI'] = self.database_uri()
+        # This is to avoid a warning in earlier versions of
+        # Flask-SQLAlchemy.
+        self.flaskapp.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+        # Store some attributes for convenience and so the test methods
+        # read more like the tests for plain old SQLAlchemy.
+        self.db = SQLAlchemy(self.flaskapp)
+        self.session = self.db.session
+
+    def tearDown(self):
+        """Drops all tables and unregisters Flask-SQLAlchemy session
+        signals.
+
+        """
+        self.db.drop_all()
+        unregister_fsa_session_signals()
+
+
+class SQLAlchemyTestBase(FlaskTestBase, DatabaseMixin):
+    """Base class for tests that use a SQLAlchemy database.
+
+    The :meth:`setUp` method does the necessary SQLAlchemy
+    initialization, and the subclasses should populate the database with
+    models and then create the database (by calling
+    ``self.Base.metadata.create_all()``).
+
+    By default, this class creates a SQLite database; subclasses can
+    override the :meth:`.database_uri` method to enable configuration of
+    an alternate database backend.
 
     """
 
     def setUp(self):
         """Initializes the components necessary for models in a SQLAlchemy
-        database, as well as for Flask-Restless.
+        database.
 
         """
-        super(DatabaseTestBase, self).setUp()
-
-        # initialize SQLAlchemy and Flask-Restless
-        app = self.flaskapp
-        engine = create_engine(app.config['SQLALCHEMY_DATABASE_URI'],
-                               convert_unicode=True)
+        super(SQLAlchemyTestBase, self).setUp()
+        engine = create_engine(self.database_uri(), convert_unicode=True)
         self.Session = sessionmaker(autocommit=False, autoflush=False,
                                     bind=engine)
         self.session = scoped_session(self.Session)
         self.Base = declarative_base()
         self.Base.metadata.bind = engine
-        #Base.query = self.session.query_property()
-        self.manager = APIManager(app, self.session)
-
-
-class TestSupport(DatabaseTestBase):
-    """Base class for test cases which use a database with some basic models.
-
-    """
-
-    def setUp(self):
-        """Creates some example models and creates the database tables.
-
-        This class defines a whole bunch of models with various properties for
-        use in testing, so look here first when writing new tests.
-
-        """
-        super(TestSupport, self).setUp()
-
-        # declare the models
-        class Program(self.Base):
-            __tablename__ = 'program'
-            id = Column(Integer, primary_key=True)
-            name = Column(Unicode, unique=True)
-
-        class ComputerProgram(self.Base):
-            __tablename__ = 'computer_program'
-            computer_id = Column(Integer, ForeignKey('computer.id'),
-                                 primary_key=True)
-            program_id = Column(Integer, ForeignKey('program.id'),
-                                primary_key=True)
-            licensed = Column(Boolean, default=False)
-            program = relationship('Program')
-
-        class Computer(self.Base):
-            __tablename__ = 'computer'
-            id = Column(Integer, primary_key=True)
-            name = Column(Unicode, unique=True)
-            vendor = Column(Unicode)
-            buy_date = Column(DateTime)
-            owner_id = Column(Integer, ForeignKey('person.id'))
-            owner = relationship('Person')
-            programs = relationship('ComputerProgram',
-                                    cascade="all, delete-orphan",
-                                    backref='computer')
-
-            def speed(self):
-                return 42
-
-            @property
-            def speed_property(self):
-                return self.speed()
-
-        class Screen(self.Base):
-            __tablename__ = 'screen'
-            id = Column(Integer, primary_key=True)
-            width = Column(Integer, nullable=False)
-            height = Column(Integer, nullable=False)
-
-            @hybrid_property
-            def number_of_pixels(self):
-                return self.width * self.height
-
-            @number_of_pixels.setter
-            def number_of_pixels(self, value):
-                self.height = value / self.width
-
-        class Person(self.Base):
-            __tablename__ = 'person'
-            id = Column(Integer, primary_key=True)
-            name = Column(Unicode, unique=True)
-            age = Column(Integer)
-            other = Column(Float)
-            birth_date = Column(Date)
-            computers = relationship('Computer')
-
-            @hybrid_property
-            def is_minor(self):
-                if getattr(self, 'age') is None:
-                    return None
-                return self.age < 18
-
-            @hybrid_property
-            def is_above_21(self):
-                if getattr(self, 'age') is None:
-                    return None
-                return self.age > 21
-
-            @is_above_21.expression
-            def is_above_21(cls):
-                return select([cls.age > 21]).as_scalar()
-
-            def name_and_age(self):
-                return "{0} (aged {1:d})".format(self.name, self.age)
-
-            def first_computer(self):
-                return sorted(self.computers, key=lambda k: k.name)[0]
-
-        class LazyComputer(self.Base):
-            __tablename__ = 'lazycomputer'
-            id = Column(Integer, primary_key=True)
-            name = Column(Unicode)
-            ownerid = Column(Integer, ForeignKey('lazyperson.id'))
-            owner = relationship('LazyPerson',
-                                 backref=backref('computers', lazy='dynamic'))
-
-        class LazyPerson(self.Base):
-            __tablename__ = 'lazyperson'
-            id = Column(Integer, primary_key=True)
-            name = Column(Unicode)
-
-        class User(self.Base):
-            __tablename__ = 'user'
-            id = Column(Integer, primary_key=True)
-            email = Column(Unicode, primary_key=True)
-            wakeup = Column(Time)
-
-        class Planet(self.Base):
-            __tablename__ = 'planet'
-            name = Column(Unicode, primary_key=True)
-
-        class Satellite(self.Base):
-            __tablename__ = 'satellite'
-            name = Column(Unicode, primary_key=True)
-            period = Column(Interval, nullable=True)
-
-        class Star(self.Base):
-            __tablename__ = 'star'
-            id = Column("star_id", Integer, primary_key=True)
-            inception_time = Column(DateTime, nullable=True)
-
-        class Vehicle(self.Base):
-            __tablename__ = 'vehicle'
-            uuid = Column(GUID, primary_key=True)
-
-        class CarModel(self.Base):
-            __tablename__ = 'car_model'
-            id = Column(Integer, primary_key=True)
-            name = Column(Unicode)
-            seats = Column(Integer)
-
-            manufacturer_id = Column(Integer,
-                                     ForeignKey('car_manufacturer.id'))
-            manufacturer = relationship('CarManufacturer')
-
-        class CarManufacturer(self.Base):
-            __tablename__ = 'car_manufacturer'
-            id = Column(Integer, primary_key=True)
-            name = Column(Unicode)
-            models = relationship('CarModel')
-
-        class Project(self.Base):
-            __tablename__ = 'project'
-            id = Column(Integer, primary_key=True)
-            person_id = Column(Integer, ForeignKey('person.id'))
-            person = relationship('Person',
-                                 backref=backref('projects', lazy='dynamic'))
-
-        class Proof(self.Base):
-            __tablename__ = 'proof'
-            id = Column(Integer, primary_key=True)
-            project = relationship('Project', backref=backref('proofs', lazy='dynamic'))
-            project_id = Column(Integer, ForeignKey('project.id'))
-            person = association_proxy('project', 'person')
-            person_id = association_proxy('project', 'person_id')
-
-        self.Person = Person
-        self.Program = Program
-        self.ComputerProgram = ComputerProgram
-        self.LazyComputer = LazyComputer
-        self.LazyPerson = LazyPerson
-        self.User = User
-        self.Computer = Computer
-        self.Planet = Planet
-        self.Satellite = Satellite
-        self.Star = Star
-        self.Vehicle = Vehicle
-        self.CarManufacturer = CarManufacturer
-        self.CarModel = CarModel
-        self.Project = Project
-        self.Proof = Proof
-        self.Screen = Screen
-
-        # create all the tables required for the models
-        self.Base.metadata.create_all()
 
     def tearDown(self):
         """Drops all tables from the temporary database."""
-        #self.session.remove()
+        self.session.remove()
         self.Base.metadata.drop_all()
 
 
-class TestSupportPrefilled(TestSupport):
-    """Base class for tests which use a database and have an
-    :class:`flask_restless.APIManager` with a :class:`flask.Flask` app object.
+class ManagerTestBase(SQLAlchemyTestBase):
+    """Base class for tests that use a SQLAlchemy database and an
+    :class:`~flask_restless.APIManager`.
 
-    The test client for the :class:`flask.Flask` application is accessible to
-    test functions at ``self.app`` and the :class:`flask_restless.APIManager`
-    is accessible at ``self.manager``.
+    Nearly all test classes should subclass this class. Since we strive
+    to make Flask-Restless compliant with plain old SQLAlchemy first,
+    the default database abstraction layer used by tests in this class
+    will be SQLAlchemy. Test classes requiring Flask-SQLAlchemy must
+    instantiate their own :class:`~flask_restless.APIManager`.
 
-    The database will be prepopulated with five ``Person`` objects. The list of
-    these objects can be accessed at ``self.people``.
+    The :class:`~flask_restless.APIManager` instance for use in
+    tests is accessible at ``self.manager``.
 
     """
 
     def setUp(self):
-        """Creates the database, the Flask application, and the APIManager."""
-        # create the database
-        super(TestSupportPrefilled, self).setUp()
-        # create some people in the database for testing
-        lincoln = self.Person(name=u'Lincoln', age=23, other=22,
-                              birth_date=datetime.date(1900, 1, 2))
-        mary = self.Person(name=u'Mary', age=19, other=19)
-        lucy = self.Person(name=u'Lucy', age=25, other=20)
-        katy = self.Person(name=u'Katy', age=7, other=10)
-        john = self.Person(name=u'John', age=28, other=10)
-        self.people = [lincoln, mary, lucy, katy, john]
-        self.session.add_all(self.people)
-        self.session.commit()
+        """Initializes an instance of
+        :class:`~flask_restless.APIManager` with a SQLAlchemy
+        session.
+
+        """
+        super(ManagerTestBase, self).setUp()
+        self.manager = APIManager(self.flaskapp, session=self.session)
+
+    # HACK If we don't include this, there seems to be an issue with the
+    # globally known APIManager objects not being cleared after every test.
+    def tearDown(self):
+        """Clear the :class:`~flask_restless.APIManager` objects
+        known by the global helper functions :data:`model_for`,
+        :data:`url_for`, etc.
+
+        """
+        super(ManagerTestBase, self).tearDown()
+        for func in GLOBAL_FUNCS:
+            func.created_managers.clear()

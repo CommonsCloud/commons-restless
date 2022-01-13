@@ -1,76 +1,47 @@
+# helpers.py - helper functions for Flask-Restless
+#
+# Copyright 2011 Lincoln de Sousa <lincoln@comum.org>.
+# Copyright 2012, 2013, 2014, 2015, 2016 Jeffrey Finkelstein
+#           <jeffrey.finkelstein@gmail.com> and contributors.
+#
+# This file is part of Flask-Restless.
+#
+# Flask-Restless is distributed under both the GNU Affero General Public
+# License version 3 and under the 3-clause BSD license. For more
+# information, see LICENSE.AGPL and LICENSE.BSD.
+"""Helper functions for Flask-Restless.
+
+Many of the functions in this module use the `SQLAlchemy inspection
+API`_. As a rule, however, these functions do not catch
+:exc:`sqlalchemy.exc.NoInspectionAvailable` exceptions; the
+responsibility is on the calling function to ensure that functions that
+expect, for example, a SQLAlchemy model actually receive a SQLAlchemy
+model.
+
+.. _SQLAlchemy inspection API:
+   https://docs.sqlalchemy.org/en/latest/core/inspection.html
+
 """
-    flask.ext.restless.helpers
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-    Helper functions for Flask-Restless.
-
-    :copyright: 2012 Jeffrey Finkelstein <jeffrey.finkelstein@gmail.com>
-    :license: GNU AGPLv3+ or BSD
-
-"""
-import copy
 import datetime
 import inspect
-import uuid
-import json
 
 from dateutil.parser import parse as parse_datetime
 from sqlalchemy import Date
 from sqlalchemy import DateTime
 from sqlalchemy import Interval
-from sqlalchemy import or_
+from sqlalchemy import Time
 from sqlalchemy.exc import NoInspectionAvailable
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.associationproxy import AssociationProxy
-from sqlalchemy.ext import hybrid
-from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import ColumnProperty
-from sqlalchemy.orm import RelationshipProperty as RelProperty
-from sqlalchemy.orm.attributes import InstrumentedAttribute
-from sqlalchemy.orm.attributes import QueryableAttribute
-from sqlalchemy.orm.query import Query
+from sqlalchemy.orm import RelationshipProperty
 from sqlalchemy.sql import func
-from sqlalchemy.sql.expression import _BinaryExpression
 from sqlalchemy.sql.expression import ColumnElement
 from sqlalchemy.inspection import inspect as sqlalchemy_inspect
-
-from sqlalchemy import and_ as AND
-from sqlalchemy import or_ as OR
-
-from geoalchemy2.elements import WKBElement
-import geoalchemy2.functions as geofunc
-
-#: Names of attributes which should definitely not be considered relations when
-#: dynamically computing a list of relations of a SQLAlchemy model.
-RELATION_BLACKLIST = ('query', 'query_class', '_sa_class_manager',
-                      '_decl_class_registry')
-
-
-#: Names of columns which should definitely not be considered user columns to
-#: be included in a dictionary representation of a model.
-COLUMN_BLACKLIST = ('_sa_polymorphic_on', )
-
-#: Types which should be considered columns of a model when iterating over all
-#: attributes of a model class.
-COLUMN_TYPES = (InstrumentedAttribute, hybrid_property)
+from werkzeug.urls import url_quote_plus
 
 #: Strings which, when received by the server as the value of a date or time
 #: field, indicate that the server should use the current time when setting the
 #: value of the field.
 CURRENT_TIME_MARKERS = ('CURRENT_TIMESTAMP', 'CURRENT_DATE', 'LOCALTIMESTAMP')
-
-
-def partition(l, condition):
-    """Returns a pair of lists, the left one containing all elements of `l` for
-    which `condition` is ``True`` and the right one containing all elements of
-    `l` for which `condition` is ``False``.
-
-    `condition` is a function that takes a single argument (each individual
-    element of the list `l`) and returns either ``True`` or ``False``.
-
-    """
-    return [x for x in l if condition(x)], [x for x in l if not condition(x)]
 
 
 def session_query(session, model):
@@ -94,445 +65,353 @@ def session_query(session, model):
     return session.query(model)
 
 
-def upper_keys(d):
-    """Returns a new dictionary with the keys of `d` converted to upper case
-    and the values left unchanged.
+def assoc_proxy_scalar_collections(model):
+    """Yields the name of each association proxy collection as a string.
+
+    This includes each association proxy that proxies to a scalar
+    collection (for example, a list of strings) via an association
+    table. It excludes each association proxy that proxies to a
+    collection of instances (for example, a to-many relationship) via an
+    association object.
+
+    .. seealso::
+
+       :func:`scalar_collection_proxied_relations`
+
+    .. versionadded:: 1.0.0
 
     """
-    return dict(zip((k.upper() for k in d.keys()), d.values()))
-
-
-def get_columns(model):
-    """Returns a dictionary-like object containing all the columns of the
-    specified `model` class.
-
-    This includes `hybrid attributes`_.
-
-    .. _hybrid attributes: http://docs.sqlalchemy.org/en/latest/orm/extensions/hybrid.html
-
-    """
-    columns = {}
-    for superclass in model.__mro__:
-        for name, column in superclass.__dict__.items():
-            if isinstance(column, COLUMN_TYPES):
-                columns[name] = column
-    return columns
+    mapper = sqlalchemy_inspect(model)
+    for k, v in mapper.all_orm_descriptors.items():
+        if isinstance(v, AssociationProxy) \
+           and not isinstance(v.remote_attr.property, RelationshipProperty) \
+           and is_like_list(model, v.local_attr.key):
+            yield k
 
 
 def get_relations(model):
-    """Returns a list of relation names of `model` (as a list of strings)."""
-    return [k for k in dir(model)
-            if not (k.startswith('__') or k in RELATION_BLACKLIST)
-            and get_related_model(model, k)]
+    """Yields the name of each relationship of a model as a string.
+
+    For a relationship via an association proxy, this function shows
+    only the remote attribute, not the intermediate relationship. For
+    example, if there is a table for ``Article`` and ``Tag`` and a table
+    associating the two via a many-to-many relationship, ::
+
+        from sqlalchemy import Column
+        from sqlalchemy import ForeignKey
+        from sqlalchemy import Integer
+        from sqlalchemy.ext.declarative import declarative_base
+        from sqlalchemy.orm import relationship
+
+        Base = declarative_base()
+
+        class Article(Base):
+            __tablename__ = 'article'
+            id = Column(Integer, primary_key=True)
+            articletags = relationship('ArticleTag')
+            tags = association_proxy('articletags', 'tag',
+                                     creator=lambda tag: ArticleTag(tag=tag))
+
+        class ArticleTag(Base):
+            __tablename__ = 'articletag'
+            article_id = Column(Integer, ForeignKey('article.id'),
+                                primary_key=True)
+            tag_id = Column(Integer, ForeignKey('tag.id'), primary_key=True)
+            tag = relationship('Tag')
+
+        class Tag(self.Base):
+            __tablename__ = 'tag'
+            id = Column(Integer, primary_key=True)
+
+    then this function reveals the ``tags`` proxy::
+
+        >>> list(get_relations(Article))
+        ['tags']
+
+    Similarly, for association proxies that proxy to a scalar collection
+    via an association table, this will show the related model. For
+    example, if there is an association proxy for a scalar collection
+    like this::
+
+        from sqlalchemy import Column
+        from sqlalchemy import ForeignKey
+        from sqlalchemy import Integer
+        from sqlalchemy import Table
+        from sqlalchemy.ext.declarative import declarative_base
+        from sqlalchemy.orm import relationship
+
+        Base = declarative_base()
+
+        class Article(Base):
+            __tablename__ = 'article'
+            id = Column(Integer, primary_key=True)
+            tags = relationship('Tag', secondary=lambda: articletags_table)
+            tag_names = association_proxy('tags', 'name',
+                                          creator=lambda s: Tag(name=s))
+
+        class Tag(self.Base):
+            __tablename__ = 'tag'
+            id = Column(Integer, primary_key=True)
+            name = Column(Unicode)
+
+        articletags_table = \
+            Table('articletags', Base.metadata,
+                  Column('article_id', Integer, ForeignKey('article.id'),
+                         primary_key=True),
+                  Column('tag_id', Integer, ForeignKey('tag.id'),
+                         primary_key=True)
+            )
+
+    then this function yields only the ``tags`` relationship, not the
+    ``tag_names`` attribute::
+
+        >>> list(get_relations(Article))
+        ['tags']
+
+    """
+    mapper = sqlalchemy_inspect(model)
+
+    # If we didn't have to deal with association proxies, we could just
+    # do `return list(mapper.relationships)`.
+    #
+    # However, we need to deal with (at least) two different usages of
+    # association proxies: one in which the proxy is to a scalar
+    # collection (like a list of strings) and one in which the proxy is
+    # to a collection of instances (like a to-many relationship).
+    #
+    # First we record each association proxy and the the local attribute
+    # through which it proxies. This information is stored in a mapping
+    # from local attribute key to proxy name. For example, an
+    # association proxy defined like this::
+    #
+    #     tags = associationproxy('articletags', 'tag')
+    #
+    # is stored below as a dictionary entry mapping 'articletags' to
+    # 'tags'.
+    association_proxies = {}
+    for k, v in mapper.all_orm_descriptors.items():
+        if isinstance(v, AssociationProxy):
+            association_proxies[v.local_attr.key] = k
+
+    # Next we determine which association proxies represent scalar
+    # collections as opposed to to-many relationships. We need to ignore
+    # these.
+    scalar_collections = set(assoc_proxy_scalar_collections(model))
+
+    # Finally we find all plain old relationships and all association
+    # proxy relationships.
+    #
+    # If the association proxy is through an association object, we
+    # yield that too.
+    for r in mapper.relationships.keys():
+        yield r
+        proxy = association_proxies.get(r)
+        if proxy is not None and proxy not in scalar_collections:
+                yield association_proxies[r]
 
 
 def get_related_model(model, relationname):
     """Gets the class of the model to which `model` is related by the attribute
     whose name is `relationname`.
 
+    For example, if we have the model classes ::
+
+        class Person(Base):
+            __tablename__ = 'person'
+            id = Column(Integer, primary_key=True)
+            articles = relationship('Article')
+
+        class Article(Base):
+            __tablename__ = 'article'
+            id = Column(Integer, primary_key=True)
+            author_id = Column(Integer, ForeignKey('person.id'))
+            author = relationship('Person')
+
+    then ::
+
+        >>> get_related_model(Person, 'articles')
+        <class 'Article'>
+        >>> get_related_model(Article, 'author')
+        <class 'Person'>
+
+    This function also "sees through" association proxies and returns
+    the model of the proxied remote relation.
+
     """
-    if hasattr(model, relationname):
-        attr = getattr(model, relationname)
-        if hasattr(attr, 'property') \
-                and isinstance(attr.property, RelProperty):
-            return attr.property.mapper.class_
-        if isinstance(attr, AssociationProxy):
-            return get_related_association_proxy_model(attr)
-    return None
+    mapper = sqlalchemy_inspect(model)
+    attribute = mapper.all_orm_descriptors[relationname]
+    # HACK This is required for Python 3.3 only. I'm guessing it lazily
+    # loads the attribute or something like that.
+    hasattr(model, relationname)
+    return get_related_model_from_attribute(attribute)
 
 
-def get_related_association_proxy_model(attr):
-    """Returns the model class specified by the given SQLAlchemy relation
-    attribute, or ``None`` if no such class can be inferred.
+def get_related_model_from_attribute(attribute):
+    """Gets the class of the model related to the given attribute via
+    the given name.
 
-    `attr` must be a relation attribute corresponding to an association proxy.
+    `attribute` may be an
+    :class:`~sqlalchemy.orm.attributes.InstrumentedAttribute` or an
+    :class:`~sqlalchemy.ext.associationproxy.AssociationProxy`, for
+    example ``Article.comments`` or ``Comment.tags``. This function
+    "sees through" association proxies to return the model of the
+    proxied remote relation.
 
     """
-    prop = attr.remote_attr.property
-    for attribute in ('mapper', 'parent'):
-        if hasattr(prop, attribute):
-            return getattr(prop, attribute).class_
-    return None
+    if isinstance(attribute, AssociationProxy):
+        return attribute.remote_attr.mapper.class_
+    return attribute.property.mapper.class_
+
+
+def foreign_key_columns(model):
+    """Returns a list of the :class:`sqlalchemy.Column` objects that contain
+    foreign keys for relationships in the specified model class.
+
+    """
+    mapper = sqlalchemy_inspect(model)
+    return [c for c in mapper.columns if c.foreign_keys]
+
+
+def foreign_keys(model):
+    """Returns a list of the names of columns that contain foreign keys for
+    relationships in the specified model class.
+
+    """
+    return [column.name for column in foreign_key_columns(model)]
 
 
 def has_field(model, fieldname):
-    """Returns ``True`` if the `model` has the specified field
-    or if it has a settable hybrid property for this field name.
+    """Returns ``True`` if the `model` has the specified field or if it has a
+    settable hybrid property for this field name.
 
     """
-    descriptors_data = sqlalchemy_inspect(model).all_orm_descriptors._data
-    if fieldname in descriptors_data and hasattr(descriptors_data[fieldname], 'fset'):
-        return getattr(descriptors_data[fieldname], 'fset') is not None
-    return hasattr(model, fieldname)
+    mapper = sqlalchemy_inspect(model)
+    # Get all descriptors, which include columns, relationships, and
+    # other things like association proxies and hybrid properties.
+    descriptors = mapper.all_orm_descriptors
+    if fieldname not in descriptors:
+        return False
+    field = descriptors[fieldname]
+    # First, we check whether `fieldname` specifies a settable hybrid
+    # property. This is a bit flimsy: we check whether the `fset`
+    # attribute has been set on the `hybrid_property` instance. The
+    # `fset` instance attribute is only set if the user defined a hybrid
+    # property setter.
+    if hasattr(field, 'fset'):
+        return field.fset is not None
+    # At this point, we simply check that the attribute is not callable.
+    return not callable(getattr(model, fieldname))
+
+
+def is_relationship(model, fieldname):
+    """Decides whether a field is a relationship (as opposed to a
+    field).
+
+    `model` is a SQLAlchemy model.
+
+    `fieldname` is a string naming a field of the given model. This
+    function returns True if and only if the field is a relationship.
+
+    This function currently does *not* return `True` for association
+    proxies.
+
+    """
+    mapper = sqlalchemy_inspect(model)
+    return fieldname in mapper.relationships
 
 
 def get_field_type(model, fieldname):
-    """Helper which returns the SQLAlchemy type of the field.
+    """Returns the SQLAlchemy type of the field.
+
+    This works for plain columns and association proxies. If `fieldname`
+    specifies a hybrid property, this function returns `None`.
+
     """
     field = getattr(model, fieldname)
     if isinstance(field, ColumnElement):
-        fieldtype = field.type
-    else:
-        if isinstance(field, AssociationProxy):
-            field = field.remote_attr
-        if hasattr(field, 'property'):
-            prop = field.property
-            if isinstance(prop, RelProperty):
-                return None
-            fieldtype = prop.columns[0].type
-        else:
+        return field.type
+    if isinstance(field, AssociationProxy):
+        field = field.remote_attr
+    if hasattr(field, 'property'):
+        prop = field.property
+        if isinstance(prop, RelationshipProperty):
             return None
-    return fieldtype
-
-
-def is_date_field(model, fieldname):
-    """Returns ``True`` if and only if the field of `model` with the specified
-    name corresponds to either a :class:`datetime.date` object or a
-    :class:`datetime.datetime` object.
-    """
-    fieldtype = get_field_type(model, fieldname)
-    return isinstance(fieldtype, Date) or isinstance(fieldtype, DateTime)
-
-
-def is_interval_field(model, fieldname):
-    """Returns ``True`` if and only if the field of `model` with the specified
-    name corresponds to a :class:`datetime.timedelta` object.
-    """
-    fieldtype = get_field_type(model, fieldname)
-    return isinstance(fieldtype, Interval)
-
-
-def assign_attributes(model, **kwargs):
-    """Assign all attributes from the supplied `kwargs` dictionary to the
-    model. This does the same thing as the default declarative constructor,
-    when provided a dictionary of attributes and values.
-
-    """
-    cls = type(model)
-    for field, value in kwargs.items():
-        if not hasattr(cls, field):
-            msg = '{0} has no field named "{1!r}"'.format(cls.__name__, field)
-            raise TypeError(msg)
-        setattr(model, field, value)
+        return prop.columns[0].type
+    return None
 
 
 def primary_key_names(model):
-    """Returns all the primary keys for a model."""
-    return [key for key, field in inspect.getmembers(model)
-            if isinstance(field, QueryableAttribute)
-            and isinstance(field.property, ColumnProperty)
-            and field.property.columns[0].primary_key]
+    """Returns a list of all the primary keys for a model.
 
-
-def primary_key_name(model_or_instance):
-    """Returns the name of the primary key of the specified model or instance
-    of a model, as a string.
-
-    If `model_or_instance` specifies multiple primary keys and ``'id'`` is one
-    of them, ``'id'`` is returned. If `model_or_instance` specifies multiple
-    primary keys and ``'id'`` is not one of them, only the name of the first
-    one in the list of primary keys is returned.
+    The returned list contains the name of each primary key as a string.
 
     """
-    its_a_model = isinstance(model_or_instance, type)
-    model = model_or_instance if its_a_model else model_or_instance.__class__
-    pk_names = primary_key_names(model)
-    return 'id' if 'id' in pk_names else pk_names[0]
+    mapper = sqlalchemy_inspect(model)
+    return [column.name for column in mapper.primary_key]
 
 
-def is_like_list(instance, relation):
-    """Returns ``True`` if and only if the relation of `instance` whose name is
-    `relation` is list-like.
+def primary_key_value(instance, as_string=False):
+    """Returns the value of the primary key field of the specified `instance`
+    of a SQLAlchemy model.
 
-    A relation may be like a list if, for example, it is a non-lazy one-to-many
-    relation, or it is a dynamically loaded one-to-many.
+    This essentially a convenience function for::
+
+        getattr(instance, primary_key_for(instance))
+
+    If `as_string` is ``True``, try to coerce the return value to a string.
 
     """
-    if relation in instance._sa_class_manager:
-        return instance._sa_class_manager[relation].property.uselist
-    elif hasattr(instance, relation):
-        attr = getattr(instance._sa_instance_state.class_, relation)
-        if hasattr(attr, 'property'):
-            return attr.property.uselist
-    related_value = getattr(type(instance), relation, None)
-    if isinstance(related_value, AssociationProxy):
-        local_prop = related_value.local_attr.prop
-        if isinstance(local_prop, RelProperty):
-            return local_prop.uselist
-    return False
+    result = getattr(instance, primary_key_for(instance))
+    if not as_string:
+        return result
+    try:
+        return str(result)
+    except UnicodeEncodeError:
+        return url_quote_plus(result.encode('utf-8'))
+
+
+def is_like_list(model_or_instance, relationname):
+    """Decides whether a relation of a SQLAlchemy model is list-like.
+
+    A relation may be like a list if it behaves like a to-many relation
+    (either lazy or eager)
+
+    `model_or_instance` may be either a SQLAlchemy model class or an
+    instance of such a class.
+
+    `relationname` is a string naming a relationship of the given
+    model or instance.
+
+    """
+    # Use Python's built-in inspect module to decide whether the
+    # argument is a model or an instance of a model.
+    if not inspect.isclass(model_or_instance):
+        model = get_model(model_or_instance)
+    else:
+        model = model_or_instance
+    mapper = sqlalchemy_inspect(model)
+    relation = mapper.all_orm_descriptors[relationname]
+    if isinstance(relation, AssociationProxy):
+        relation = relation.local_attr
+    return relation.property.uselist
 
 
 def is_mapped_class(cls):
+    """Returns ``True`` if and only if the specified SQLAlchemy model class is
+    a mapped class.
+
+    """
     try:
         sqlalchemy_inspect(cls)
-        return True
-    except:
-        return False
-
-
-# This code was adapted from :meth:`elixir.entity.Entity.to_dict` and
-# http://stackoverflow.com/q/1958219/108197.
-def to_dict(instance, deep=None, exclude=None, include=None,
-            exclude_relations=None, include_relations=None,
-            include_methods=None, session=None):
-    """Returns a dictionary representing the fields of the specified `instance`
-    of a SQLAlchemy model.
-
-    The returned dictionary is suitable as an argument to
-    :func:`flask.jsonify`; :class:`datetime.date` and :class:`uuid.UUID`
-    objects are converted to string representations, so no special JSON encoder
-    behavior is required.
-
-    `deep` is a dictionary containing a mapping from a relation name (for a
-    relation of `instance`) to either a list or a dictionary. This is a
-    recursive structure which represents the `deep` argument when calling
-    :func:`!_to_dict` on related instances. When an empty list is encountered,
-    :func:`!_to_dict` returns a list of the string representations of the
-    related instances.
-
-    If either `include` or `exclude` is not ``None``, exactly one of them must
-    be specified. If both are not ``None``, then this function will raise a
-    :exc:`ValueError`. `exclude` must be a list of strings specifying the
-    columns which will *not* be present in the returned dictionary
-    representation of the object (in other words, it is a
-    blacklist). Similarly, `include` specifies the only columns which will be
-    present in the returned dictionary (in other words, it is a whitelist).
-
-    .. note::
-
-       If `include` is an iterable of length zero (like the empty tuple or the
-       empty list), then the returned dictionary will be empty. If `include` is
-       ``None``, then the returned dictionary will include all columns not
-       excluded by `exclude`.
-
-    `include_relations` is a dictionary mapping strings representing relation
-    fields on the specified `instance` to a list of strings representing the
-    names of fields on the related model which should be included in the
-    returned dictionary; `exclude_relations` is similar.
-
-    `include_methods` is a list mapping strings to method names which will
-    be called and their return values added to the returned dictionary.
-
-    """
-    if (exclude is not None or exclude_relations is not None) and \
-            (include is not None or include_relations is not None):
-        raise ValueError('Cannot specify both include and exclude.')
-    # create a list of names of columns, including hybrid properties
-    instance_type = type(instance)
-    columns = []
-    try:
-        inspected_instance = sqlalchemy_inspect(instance_type)
-        column_attrs = inspected_instance.column_attrs.keys()
-        descriptors = inspected_instance.all_orm_descriptors.items()
-        hybrid_columns = [k for k, d in descriptors
-                          if d.extension_type == hybrid.HYBRID_PROPERTY
-                          and not (deep and k in deep)]
-        columns = column_attrs + hybrid_columns
     except NoInspectionAvailable:
-        return instance
-    # filter the columns based on exclude and include values
-    if exclude is not None:
-        columns = (c for c in columns if c not in exclude)
-    elif include is not None:
-        columns = (c for c in columns if c in include)
-    # create a dictionary mapping column name to value
-    result = dict((col, getattr(instance, col)) for col in columns
-                  if not (col.startswith('__') or col in COLUMN_BLACKLIST))
-    # add any included methods
-
-    if include_methods is not None:
-        for method in include_methods:
-            if '.' not in method:
-                value = getattr(instance, method)
-                # Allow properties and static attributes in include_methods
-                if callable(value):
-                    value = value()
-                result[method] = value
-
-    # if include_methods is not None:
-    #     result.update(dict((method, getattr(instance, method)())
-    #                        for method in include_methods
-    #                        if not '.' in method))
-    # Check for objects in the dictionary that may not be serializable by
-    # default. Convert datetime objects to ISO 8601 format, convert UUID
-    # objects to hexadecimal strings, etc.
-    for key, value in list(result.items()):
-        if "password" == key:
-            del result["password"]
-        elif "current_login_ip" == key:
-            del result["current_login_ip"]
-        elif "last_login_ip" == key:
-            del result["last_login_ip"]
-        else:
-            if isinstance(value, WKBElement):
-                # print 'We need to convert to GeoJSON here', session.scalar(geofunc.ST_AsGeoJSON(value)), value
-                # print 'wkb.loads(value)', wkb.loads(value)
-                result[key] = json.loads(session.scalar(geofunc.ST_AsGeoJSON(value)))
-            elif isinstance(value, (datetime.date, datetime.time)):
-                result[key] = value.isoformat()
-            elif isinstance(value, uuid.UUID):
-                result[key] = str(value)
-            elif key not in column_attrs and is_mapped_class(type(value)):
-                result[key] = to_dict(value)
-    # recursively call _to_dict on each of the `deep` relations
-    deep = deep or {}
-    for relation, rdeep in deep.items():
-        # Get the related value so we can see if it is None, a list, a query
-        # (as specified by a dynamic relationship loader), or an actual
-        # instance of a model.
-        relatedvalue = getattr(instance, relation)
-        if relatedvalue is None:
-            result[relation] = None
-            continue
-        # Determine the included and excluded fields for the related model.
-        newexclude = None
-        newinclude = None
-        if exclude_relations is not None and relation in exclude_relations:
-            newexclude = exclude_relations[relation]
-        elif (include_relations is not None and
-              relation in include_relations):
-            newinclude = include_relations[relation]
-        # Determine the included methods for the related model.
-        newmethods = None
-        if include_methods is not None:
-            newmethods = [method.split('.', 1)[1] for method in include_methods
-                          if method.split('.', 1)[0] == relation]
-        if is_like_list(instance, relation):
-            result[relation] = [to_dict(inst, rdeep, exclude=newexclude,
-                                        include=newinclude,
-                                        include_methods=newmethods,
-                                        session=session)
-                                for inst in relatedvalue]
-            continue
-        # If the related value is dynamically loaded, resolve the query to get
-        # the single instance.
-        if isinstance(relatedvalue, Query):
-            relatedvalue = relatedvalue.one()
-        result[relation] = to_dict(relatedvalue, rdeep, exclude=newexclude,
-                                   include=newinclude,
-                                   include_methods=newmethods,
-                                   session=session)
-
-    """
-    Since we are producing GeoJSON instead of regular JSON we need to add
-    a `type` and a `properties` field to the object
-    """
-
-    #
-    # Must use copy here, otherwise when we delete it, this variable will
-    # emptied out as well.
-    #
-    # @see https://docs.python.org/2/library/copy.html
-    #
-    if 'geometry' in result:
-        geometry = copy.deepcopy(result['geometry'])
-        result.pop('geometry', None)
+        return False
     else:
-        geometry = None
-
-    feature = {
-        'id': result.get('id'),
-        'geometry': geometry,
-        'properties': result,
-        'type': 'Feature'
-    }
-
-    return feature
+        return True
 
 
-def evaluate_functions(session, model, functions, search_params):
-    """Executes each of the SQLAlchemy functions specified in ``functions``, a
-    list of dictionaries of the form described below, on the given model and
-    returns a dictionary mapping function name (slightly modified, see below)
-    to result of evaluation of that function.
-
-    `session` is the SQLAlchemy session in which all database transactions will
-    be performed.
-
-    `model` is the SQLAlchemy model class on which the specified functions will
-    be evaluated.
-
-    ``functions`` is a list of dictionaries of the form::
-
-        {'name': 'avg', 'field': 'amount'}
-
-    For example, if you want the sum and the average of the field named
-    "amount"::
-
-        >>> # assume instances of Person exist in the database...
-        >>> f1 = dict(name='sum', field='amount')
-        >>> f2 = dict(name='avg', field='amount')
-        >>> evaluate_functions(Person, [f1, f2])
-        {'avg__amount': 456, 'sum__amount': 123}
-
-    The return value is a dictionary mapping ``'<funcname>__<fieldname>'`` to
-    the result of evaluating that function on that field. If `model` is
-    ``None`` or `functions` is empty, this function returns the empty
-    dictionary.
-
-    If a field does not exist on a given model, :exc:`AttributeError` is
-    raised. If a function does not exist,
-    :exc:`sqlalchemy.exc.OperationalError` is raised. The former exception will
-    have a ``field`` attribute which is the name of the field which does not
-    exist. The latter exception will have a ``function`` attribute which is the
-    name of the function with does not exist.
-
-    """
-    if not model or not functions:
-        return {}
-    processed = []
-    funcnames = []
-
-    """
-    """
-    q = {
-        'filters': search_params
-    }
-
-    if isinstance(q, dict):
-        searchparams = SearchParameters.from_dictionary(q)
-
-    filters = QueryBuilder._create_filters(model, searchparams)
-    """
-    """
-
-    for function in functions:
-        funcname, fieldname = function['name'], function['field']
-        # We retrieve the function by name from the SQLAlchemy ``func``
-        # module and the field by name from the model class.
-        #
-        # If the specified field doesn't exist, this raises AttributeError.
-        funcobj = getattr(func, funcname)
-        try:
-            field = getattr(model, fieldname)
-        except AttributeError as exception:
-            exception.field = fieldname
-            raise exception
-        # Time to store things to be executed. The processed list stores
-        # functions that will be executed in the database and funcnames
-        # contains names of the entries that will be returned to the
-        # caller.
-        funcnames.append('{0}__{1}'.format(funcname, fieldname))
-        processed.append(funcobj(field))
-    # Evaluate all the functions at once and get an iterable of results.
-    try:
-        evaluateFiltered = session.query(*processed).filter(searchparams.junction(*filters)).one()
-
-        evaluated = session.query(*processed).one()
-    except OperationalError as exception:
-        # HACK original error message is of the form:
-        #
-        #    '(OperationalError) no such function: bogusfuncname'
-        original_error_msg = exception.args[0]
-        bad_function = original_error_msg[37:]
-        exception.function = bad_function
-        raise exception
-    return dict(zip(funcnames, evaluateFiltered))
-
-
-def query_by_primary_key(session, model, primary_key_value, licensee, primary_key=None):
+def query_by_primary_key(session, model, pk_value, primary_key=None):
     """Returns a SQLAlchemy query object containing the result of querying
-    `model` for instances whose primary key has the value `primary_key_value`.
+    `model` for instances whose primary key has the value `pk_value`.
 
     If `primary_key` is specified, the column specified by that string is used
     as the primary key column. Otherwise, the column named ``id`` is used.
@@ -540,549 +419,413 @@ def query_by_primary_key(session, model, primary_key_value, licensee, primary_ke
     Presumably, the returned query should have at most one element.
 
     """
-    pk_name = primary_key or primary_key_name(model)
+    pk_name = primary_key or primary_key_for(model)
     query = session_query(session, model)
+    return query.filter(getattr(model, pk_name) == pk_value)
 
-    # return query.filter(getattr(model, pk_name) == primary_key_value)
 
-    """
-
-    ***VIABLE INDUSTRIES MODIFICATION***
-
-    Changed to enable us to do Group specific filtering
-
-    """
-    if hasattr(model, 'licensee') and licensee:
-        try:
-            return query.filter(getattr(model, pk_name) == primary_key_value).filter(or_(model.licensee == licensee, model.licensee == None))
-        except InvalidRequestError:
-            return query.filter(getattr(model, pk_name) == primary_key_value)
-        except:
-            return query.filter(getattr(model, pk_name) == primary_key_value).filter(or_(model.licensee.any(id=licensee)))
-    else:
-        return query.filter(getattr(model, pk_name) == primary_key_value)
-    """
-    / VIABLE INDUSTRIES MODIFICATION
-    """
-
-def get_by(session, model, primary_key_value, primary_key=None, licensee=None):
+def get_by(session, model, pk_value, primary_key=None):
     """Returns the first instance of `model` whose primary key has the value
-    `primary_key_value`, or ``None`` if no such instance exists.
+    `pk_value`, or ``None`` if no such instance exists.
 
     If `primary_key` is specified, the column specified by that string is used
     as the primary key column. Otherwise, the column named ``id`` is used.
 
     """
-    result = query_by_primary_key(session, model, primary_key_value,
-                                  licensee, primary_key)
+    result = query_by_primary_key(session, model, pk_value, primary_key)
     return result.first()
 
 
-def get_or_create(session, model, attrs):
-    """Returns the single instance of `model` whose primary key has the
-    value found in `attrs`, or initializes a new instance if no primary key
-    is specified.
+def string_to_datetime(model, fieldname, value):
+    """Casts `value` to a :class:`datetime.datetime` or
+    :class:`datetime.timedelta` object if the given field of the given
+    model is a date-like or interval column.
 
-    Before returning the new or existing instance, its attributes are
-    assigned to the values supplied in the `attrs` dictionary.
-
-    This method does not commit the changes made to the session; the
-    calling function has that responsibility.
-
-    """
-    # Not a full relation, probably just an association proxy to a scalar
-    # attribute on the remote model.
-    if not isinstance(attrs, dict):
-        return attrs
-    # Recurse into nested relationships
-    for rel in get_relations(model):
-        if rel not in attrs:
-            continue
-        if isinstance(attrs[rel], list):
-            attrs[rel] = [get_or_create(session, get_related_model(model, rel),
-                                        r) for r in attrs[rel]]
-        else:
-            attrs[rel] = get_or_create(session, get_related_model(model, rel),
-                                       attrs[rel])
-    # Find private key names
-    pk_names = primary_key_names(model)
-    attrs = strings_to_dates(model, attrs)
-    # If all of the primary keys were included in `attrs`, try to update
-    # an existing row.
-    if all(k in attrs for k in pk_names):
-        # Determine the sub-dictionary of `attrs` which contains the mappings
-        # for the primary keys.
-        pk_values = dict((k, v) for (k, v) in attrs.items()
-                         if k in pk_names)
-        # query for an existing row which matches all the specified
-        # primary key values.
-        instance = session_query(session, model).filter_by(**pk_values).first()
-        if instance is not None:
-            assign_attributes(instance, **attrs)
-            return instance
-    # If some of the primary keys were missing, or the row wasn't found,
-    # create a new row.
-    return model(**attrs)
-
-
-def strings_to_dates(model, dictionary):
-    """Returns a new dictionary with all the mappings of `dictionary` but
-    with date strings and intervals mapped to :class:`datetime.datetime` or
-    :class:`datetime.timedelta` objects.
-
-    The keys of `dictionary` are names of fields in the model specified in the
-    constructor of this class. The values are values to set on these fields. If
-    a field name corresponds to a field in the model which is a
-    :class:`sqlalchemy.types.Date`, :class:`sqlalchemy.types.DateTime`, or
-    :class:`sqlalchemy.Interval`, then the returned dictionary will have the
-    corresponding :class:`datetime.datetime` or :class:`datetime.timedelta`
-    Python object as the value of that mapping in place of the string.
-
-    This function outputs a new dictionary; it does not modify the argument.
+    If the field name corresponds to a field in the model which is a
+    :class:`sqlalchemy.types.Date`, :class:`sqlalchemy.types.DateTime`,
+    or :class:`sqlalchemy.Interval`, then the returned value will be the
+    :class:`datetime.datetime` or :class:`datetime.timedelta` Python
+    object corresponding to `value`. Otherwise, the `value` is returned
+    unchanged.
 
     """
-    result = {}
-    for fieldname, value in dictionary.items():
-        if is_date_field(model, fieldname) and value is not None:
-            if value.strip() == '':
-                result[fieldname] = None
-            elif value in CURRENT_TIME_MARKERS:
-                result[fieldname] = getattr(func, value.lower())()
-            else:
-                result[fieldname] = parse_datetime(value)
-        elif (is_interval_field(model, fieldname) and value is not None
-              and isinstance(value, int)):
-            result[fieldname] = datetime.timedelta(seconds=value)
-        else:
-            result[fieldname] = value
-    return result
+    if value is None:
+        return value
+    # If this is a date, time or datetime field, parse it and convert it to
+    # the appropriate type.
+    field_type = get_field_type(model, fieldname)
+    if isinstance(field_type, (Date, Time, DateTime)):
+        # If the string is empty, no datetime can be inferred from it.
+        if value.strip() == '':
+            return None
+        # If the string is a string indicating that the value of should be the
+        # current datetime on the server, get the current datetime that way.
+        if value in CURRENT_TIME_MARKERS:
+            return getattr(func, value.lower())()
+        value_as_datetime = parse_datetime(value)
+        # If the attribute on the model needs to be a Date or Time object as
+        # opposed to a DateTime object, just get the date component of the
+        # datetime.
+        if isinstance(field_type, Date):
+            return value_as_datetime.date()
+        if isinstance(field_type, Time):
+            return value_as_datetime.timetz()
+        return value_as_datetime
+    # If this is an Interval field, convert the integer value to a timedelta.
+    if isinstance(field_type, Interval) and isinstance(value, int):
+        return datetime.timedelta(seconds=value)
+    # In any other case, simply copy the value unchanged.
+    return value
 
 
-def count(session, query):
-    """Returns the count of the specified `query`.
-
-    This function employs an optimization that bypasses the
-    :meth:`sqlalchemy.orm.Query.count` method, which can be very slow for large
-    queries.
-
-    """
-    counts = query.selectable.with_only_columns([func.count()])
-    num_results = session.execute(counts.order_by(None)).scalar()
-    if num_results is None or query._limit:
-        return query.count()
-    return num_results
-
-def _sub_operator(model, argument, fieldname):
-    """Recursively calls :func:`QueryBuilder._create_operation` when argument
-    is a dictionary of the form specified in :ref:`search`.
-
-    This function is for use with the ``has`` and ``any`` search operations.
-
-    """
-    if isinstance(model, InstrumentedAttribute):
-        submodel = model.property.mapper.class_
-    elif isinstance(model, AssociationProxy):
-        submodel = get_related_association_proxy_model(model)
-    else:  # TODO what to do here?
-        pass
-    if isinstance(argument, dict):
-        fieldname = argument['name']
-        operator = argument['op']
-        argument = argument.get('val')
-        relation = None
-        if '__' in fieldname:
-            fieldname, relation = fieldname.split('__')
-        return QueryBuilder._create_operation(submodel, fieldname, operator,
-                                              argument, relation)
-    # Support legacy has/any with implicit eq operator
-    return getattr(submodel, fieldname) == argument
+def get_model(instance):
+    """Returns the model class of which the specified object is an instance."""
+    return type(instance)
 
 
-#: The mapping from operator name (as accepted by the search method) to a
-#: function which returns the SQLAlchemy expression corresponding to that
-#: operator.
-#:
-#: Each of these functions accepts either one, two, or three arguments. The
-#: first argument is the field object on which to apply the operator. The
-#: second argument, where it exists, is either the second argument to the
-#: operator or a dictionary as described below. The third argument, where it
-#: exists, is the name of the field.
-#:
-#: For functions that accept three arguments, the second argument may be a
-#: dictionary containing ``'name'``, ``'op'``, and ``'val'`` mappings so that
-#: :func:`QueryBuilder._create_operation` may be applied recursively. For more
-#: information and examples, see :ref:`search`.
-#:
-#: Some operations have multiple names. For example, the equality operation can
-#: be described by the strings ``'=='``, ``'eq'``, ``'equals'``, etc.
-OPERATORS = {
-    # Operators which accept a single argument.
-    'is_null': lambda f: f == None,
-    'is_not_null': lambda f: f != None,
-    # TODO what are these?
-    'desc': lambda f: f.desc,
-    'asc': lambda f: f.asc,
-    # Operators which accept two arguments.
-    '==': lambda f, a: f == a,
-    'eq': lambda f, a: f == a,
-    'equals': lambda f, a: f == a,
-    'equal_to': lambda f, a: f == a,
-    '!=': lambda f, a: f != a,
-    'ne': lambda f, a: f != a,
-    'neq': lambda f, a: f != a,
-    'not_equal_to': lambda f, a: f != a,
-    'does_not_equal': lambda f, a: f != a,
-    '>': lambda f, a: f > a,
-    'gt': lambda f, a: f > a,
-    '<': lambda f, a: f < a,
-    'lt': lambda f, a: f < a,
-    '>=': lambda f, a: f >= a,
-    'ge': lambda f, a: f >= a,
-    'gte': lambda f, a: f >= a,
-    'geq': lambda f, a: f >= a,
-    '<=': lambda f, a: f <= a,
-    'le': lambda f, a: f <= a,
-    'lte': lambda f, a: f <= a,
-    'leq': lambda f, a: f <= a,
-    'ilike': lambda f, a: f.ilike(a),
-    'like': lambda f, a: f.like(a),
-    'in': lambda f, a: f.in_(a),
-    'not_in': lambda f, a: ~f.in_(a),
-    # Operators which accept three arguments.
-    'has': lambda f, a, fn: f.has(_sub_operator(f, a, fn)),
-    'any': lambda f, a, fn: f.any(_sub_operator(f, a, fn)),
-}
+# This code comes from <http://stackoverflow.com/a/6798042/108197>, which is
+# licensed under the Creative Commons Attribution-ShareAlike License version
+# 3.0 Unported.
+#
+# That is an answer originally authored by the user
+# <http://stackoverflow.com/users/500584/agf> to the question
+# <http://stackoverflow.com/q/6760685/108197>.
+#
+# TODO This code is for simultaneous Python 2 and 3 usage. It can be greatly
+# simplified when removing Python 2 support.
+class _Singleton(type):
+    """A metaclass for a singleton class."""
+
+    #: The known instances of the class instantiating this metaclass.
+    _instances = {}
+
+    def __call__(cls, *args, **kwargs):
+        """Returns the singleton instance of the specified class."""
+        if cls not in cls._instances:
+            supercls = super(_Singleton, cls)
+            cls._instances[cls] = supercls.__call__(*args, **kwargs)
+        return cls._instances[cls]
 
 
-class OrderBy(object):
-    """Represents an "order by" in a SQL query expression."""
-
-    def __init__(self, field, direction='asc'):
-        """Instantiates this object with the specified attributes.
-
-        `field` is the name of the field by which to order the result set.
-
-        `direction` is either ``'asc'`` or ``'desc'``, for "ascending" and
-        "descending", respectively.
-
-        """
-        self.field = field
-        self.direction = direction
-
-    def __repr__(self):
-        """Returns a string representation of this object."""
-        return '<OrderBy {0}, {1}>'.format(self.field, self.direction)
+class Singleton(_Singleton('SingletonMeta', (object,), {})):
+    """Base class for a singleton class."""
+    pass
 
 
-class Filter(object):
-    """Represents a filter to apply to a SQL query.
-
-    A filter can be, for example, a comparison operator applied to a field of a
-    model and a value or a comparison applied to two fields of the same
-    model. For more information on possible filters, see :ref:`search`.
+class KnowsAPIManagers:
+    """An object that allows client code to register :class:`APIManager`
+    objects.
 
     """
 
-    def __init__(self, fieldname, operator, argument=None, otherfield=None):
-        """Instantiates this object with the specified attributes.
+    def __init__(self):
+        #: A global list of created :class:`APIManager` objects.
+        self.created_managers = set()
 
-        `fieldname` is the name of the field of a model which will be on the
-        left side of the operator.
-
-        `operator` is the string representation of an operator to apply. The
-        full list of recognized operators can be found at :ref:`search`.
-
-        If `argument` is specified, it is the value to place on the right side
-        of the operator. If `otherfield` is specified, that field on the model
-        will be placed on the right side of the operator.
-
-        .. admonition:: About `argument` and `otherfield`
-
-           Some operators don't need either argument and some need exactly one.
-           However, this constructor will not raise any errors or otherwise
-           inform you of which situation you are in; it is basically just a
-           named tuple. Calling code must handle errors caused by missing
-           required arguments.
+    def register(self, apimanager):
+        """Inform this object about the specified :class:`APIManager` object.
 
         """
-        self.fieldname = fieldname
-        self.operator = operator
-        self.argument = argument
-        self.otherfield = otherfield
-
-    def __repr__(self):
-        """Returns a string representation of this object."""
-        return '<Filter {0} {1} {2}>'.format(self.fieldname, self.operator,
-                                             self.argument or self.otherfield)
-
-    @staticmethod
-    def from_dictionary(dictionary):
-        """Returns a new :class:`Filter` object with arguments parsed from
-        `dictionary`.
-
-        `dictionary` is a dictionary of the form::
-
-            {'name': 'age', 'op': 'lt', 'val': 20}
-
-        or::
-
-            {'name': 'age', 'op': 'lt', 'other': height}
-
-        where ``dictionary['name']`` is the name of the field of the model on
-        which to apply the operator, ``dictionary['op']`` is the name of the
-        operator to apply, ``dictionary['val']`` is the value on the right to
-        which the operator will be applied, and ``dictionary['other']`` is the
-        name of the other field of the model to which the operator will be
-        applied.
-
-        """
-        fieldname = dictionary.get('name')
-        operator = dictionary.get('op')
-        argument = dictionary.get('val')
-        otherfield = dictionary.get('field')
-        return Filter(fieldname, operator, argument, otherfield)
+        self.created_managers.add(apimanager)
 
 
-class SearchParameters(object):
-    """Aggregates the parameters for a search, including filters, search type,
-    limit, offset, and order by directives.
+class ModelFinder(KnowsAPIManagers, Singleton):
+    """The singleton class that backs the :func:`model_for` function."""
 
-    """
-
-    def __init__(self, filters=None, limit=None, offset=None, order_by=None,
-                 junction=None):
-        """Instantiates this object with the specified attributes.
-
-        `filters` is a list of :class:`Filter` objects, representing filters to
-        be applied during the search.
-
-        `limit`, if not ``None``, specifies the maximum number of results to
-        return in the search.
-
-        `offset`, if not ``None``, specifies the number of initial results to
-        skip in the result set.
-
-        `order_by` is a list of :class:`OrderBy` objects, representing the
-        ordering directives to apply to the result set which matches the
-        search.
-
-        `junction` is either :func:`sqlalchemy.or_` or :func:`sqlalchemy.and_`
-        (if ``None``, this will default to :func:`sqlalchemy.and_`), specifying
-        how the filters should be interpreted (that is, as a disjunction or a
-        conjunction).
-
-        """
-        self.filters = filters or []
-        self.limit = limit
-        self.offset = offset
-        self.order_by = order_by or []
-        self.junction = junction or AND
-
-    def __repr__(self):
-        """Returns a string representation of the search parameters."""
-        template = ('<SearchParameters filters={0}, order_by={1}, limit={2},'
-                    ' offset={3}, junction={4}>')
-        return template.format(self.filters, self.order_by, self.limit,
-                               self.offset, self.junction.__name__)
-
-    @staticmethod
-    def from_dictionary(dictionary):
-        """Returns a new :class:`SearchParameters` object with arguments parsed
-        from `dictionary`.
-
-        `dictionary` is a dictionary of the form::
-
-            {
-              'filters': [{'name': 'age', 'op': 'lt', 'val': 20}, ...],
-              'order_by': [{'field': 'age', 'direction': 'desc'}, ...]
-              'limit': 10,
-              'offset': 3,
-              'disjunction': True
-            }
-
-        where ``dictionary['filters']`` is the list of :class:`Filter` objects
-        (in dictionary form), ``dictionary['order_by']`` is the list of
-        :class:`OrderBy` objects (in dictionary form), ``dictionary['limit']``
-        is the maximum number of matching entries to return,
-        ``dictionary['offset']`` is the number of initial entries to skip in
-        the matching result set, and ``dictionary['disjunction']`` is whether
-        the filters should be joined as a disjunction or conjunction.
-
-        The provided dictionary may have other key/value pairs, but they are
-        ignored.
-
-        """
-        # for the sake of brevity...
-        from_dict = Filter.from_dictionary
-        filters = [from_dict(f) for f in dictionary.get('filters', [])]
-        order_by_list = dictionary.get('order_by', [])
-        order_by = [OrderBy(**o) for o in order_by_list]
-        limit = dictionary.get('limit')
-        offset = dictionary.get('offset')
-        disjunction = dictionary.get('disjunction')
-        junction = OR if disjunction else AND
-        return SearchParameters(filters=filters, limit=limit, offset=offset,
-                                order_by=order_by, junction=junction)
-
-
-class QueryBuilder(object):
-    """Provides a static function for building a SQLAlchemy query object based
-    on a :class:`SearchParameters` instance.
-
-    Use the static :meth:`create_query` method to create a SQLAlchemy query on
-    a given model.
-
-    """
-
-    @staticmethod
-    def _create_operation(model, fieldname, operator, argument, relation=None):
-        """Translates an operation described as a string to a valid SQLAlchemy
-        query parameter using a field or relation of the specified model.
-
-        More specifically, this translates the string representation of an
-        operation, for example ``'gt'``, to an expression corresponding to a
-        SQLAlchemy expression, ``field > argument``. The recognized operators
-        are given by the keys of :data:`OPERATORS`. For more information on
-        recognized search operators, see :ref:`search`.
-
-        If `relation` is not ``None``, the returned search parameter will
-        correspond to a search on the field named `fieldname` on the entity
-        related to `model` whose name, as a string, is `relation`.
-
-        `model` is an instance of a SQLAlchemy declarative model being
-        searched.
-
-        `fieldname` is the name of the field of `model` to which the operation
-        will be applied as part of the search. If `relation` is specified, the
-        operation will be applied to the field with name `fieldname` on the
-        entity related to `model` whose name, as a string, is `relation`.
-
-        `operation` is a string representating the operation which will be
-         executed between the field and the argument received. For example,
-         ``'gt'``, ``'lt'``, ``'like'``, ``'in'`` etc.
-
-        `argument` is the argument to which to apply the `operator`.
-
-        `relation` is the name of the relationship attribute of `model` to
-        which the operation will be applied as part of the search, or ``None``
-        if this function should not use a related entity in the search.
-
-        This function raises the following errors:
-        * :exc:`KeyError` if the `operator` is unknown (that is, not in
-          :data:`OPERATORS`)
-        * :exc:`TypeError` if an incorrect number of arguments are provided for
-          the operation (for example, if `operation` is `'=='` but no
-          `argument` is provided)
-        * :exc:`AttributeError` if no column with name `fieldname` or
-          `relation` exists on `model`
-
-        """
-        # raises KeyError if operator not in OPERATORS
-        opfunc = OPERATORS[operator]
-        argspec = inspect.getargspec(opfunc)
-        # in Python 2.6 or later, this should be `argspec.args`
-        numargs = len(argspec[0])
-        # raises AttributeError if `fieldname` or `relation` does not exist
-        field = getattr(model, relation or fieldname)
-        # each of these will raise a TypeError if the wrong number of argments
-        # is supplied to `opfunc`.
-        if numargs == 1:
-            return opfunc(field)
-        if argument is None:
-            msg = ('To compare a value to NULL, use the is_null/is_not_null '
-                   'operators.')
-            raise TypeError(msg)
-        if numargs == 2:
-            return opfunc(field, argument)
-        return opfunc(field, argument, fieldname)
-
-    @staticmethod
-    def _create_filters(model, search_params):
-        """Returns the list of operations on `model` specified in the
-        :attr:`filters` attribute on the `search_params` object.
-
-        `search-params` is an instance of the :class:`SearchParameters` class
-        whose fields represent the parameters of the search.
-
-        Raises one of :exc:`AttributeError`, :exc:`KeyError`, or
-        :exc:`TypeError` if there is a problem creating the query. See the
-        documentation for :func:`_create_operation` for more information.
-
-        Pre-condition: the ``search_params.filters`` is a (possibly empty)
-        iterable.
-
-        """
-        filters = []
-        for filt in search_params.filters:
-            fname = filt.fieldname
-            val = filt.argument
-            # get the relationship from the field name, if it exists
-            relation = None
-            if '__' in fname:
-                relation, fname = fname.split('__')
-            # get the other field to which to compare, if it exists
-            if filt.otherfield:
-                val = getattr(model, filt.otherfield)
-            # for the sake of brevity...
-            create_op = QueryBuilder._create_operation
-            param = create_op(model, fname, filt.operator, val, relation)
-            filters.append(param)
-        return filters
-
-    @staticmethod
-    def create_query(session, model, search_params):
-        """Builds an SQLAlchemy query instance based on the search parameters
-        present in ``search_params``, an instance of :class:`SearchParameters`.
-
-        This method returns a SQLAlchemy query in which all matched instances
-        meet the requirements specified in ``search_params``.
-
-        `model` is SQLAlchemy declarative model on which to create a query.
-
-        `search_params` is an instance of :class:`SearchParameters` which
-        specify the filters, order, limit, offset, etc. of the query.
-
-        Building the query proceeds in this order:
-        1. filtering the query
-        2. ordering the query
-        3. limiting the query
-        4. offsetting the query
-
-        Raises one of :exc:`AttributeError`, :exc:`KeyError`, or
-        :exc:`TypeError` if there is a problem creating the query. See the
-        documentation for :func:`_create_operation` for more information.
-
-        """
-        # Adding field filters
-        query = session_query(session, model)
-        # may raise exception here
-        filters = QueryBuilder._create_filters(model, search_params)
-        query = query.filter(search_params.junction(*filters))
-
-        # Order the search. If no order field is specified in the search
-        # parameters, order by primary key.
-        if search_params.order_by:
-            for val in search_params.order_by:
-                field = getattr(model, val.field)
-                direction = getattr(field, val.direction)
-                query = query.order_by(direction())
-        else:
-            pks = primary_key_names(model)
-            pk_order = (getattr(model, field).asc() for field in pks)
-            query = query.order_by(*pk_order)
-
-        # Limit it
-        if search_params.limit:
-            query = query.limit(search_params.limit)
-        if search_params.offset:
-            query = query.offset(search_params.offset)
-
-        if hasattr(model, 'licensee'):
-            licensee = json.loads(request.args.get('licensee', None))
-
+    def __call__(self, resource_type, _apimanager=None, **kw):
+        if _apimanager is not None:
+            # This may raise ValueError.
+            return _apimanager.model_for(resource_type, **kw)
+        for manager in self.created_managers:
             try:
-                return query.filter(or_(model.licensee == licensee, model.licensee == None))
-            except:
-                return query.filter(or_(model.licensee.any(id=licensee)))
+                return self(resource_type, _apimanager=manager, **kw)
+            except ValueError:
+                pass
+        message = ('No model with collection name {0} is known to any'
+                   ' APIManager objects; maybe you have not set the'
+                   ' `collection_name` keyword argument when calling'
+                   ' `APIManager.create_api()`?').format(resource_type)
+        raise ValueError(message)
+
+
+class CollectionNameFinder(KnowsAPIManagers, Singleton):
+    """The singleton class that backs the :func:`collection_name` function."""
+
+    def __call__(self, model, _apimanager=None, **kw):
+        if _apimanager is not None:
+            if model not in _apimanager.created_apis_for:
+                message = ('APIManager {0} has not created an API for model '
+                           ' {1}').format(_apimanager, model)
+                raise ValueError(message)
+            return _apimanager.collection_name(model, **kw)
+        for manager in self.created_managers:
+            try:
+                return self(model, _apimanager=manager, **kw)
+            except ValueError:
+                pass
+        message = ('Model {0} is not known to any APIManager'
+                   ' objects; maybe you have not called'
+                   ' APIManager.create_api() for this model.').format(model)
+        raise ValueError(message)
+
+
+class UrlFinder(KnowsAPIManagers, Singleton):
+    """The singleton class that backs the :func:`url_for` function."""
+
+    def __call__(self, model, resource_id=None, relation_name=None,
+                 related_resource_id=None, _apimanager=None,
+                 relationship=False, **kw):
+        if _apimanager is not None:
+            if model not in _apimanager.created_apis_for:
+                message = ('APIManager {0} has not created an API for model '
+                           ' {1}; maybe another APIManager instance'
+                           ' did?').format(_apimanager, model)
+                raise ValueError(message)
+            return _apimanager.url_for(model, resource_id=resource_id,
+                                       relation_name=relation_name,
+                                       related_resource_id=related_resource_id,
+                                       relationship=relationship, **kw)
+        for manager in self.created_managers:
+            try:
+                return self(model, resource_id=resource_id,
+                            relation_name=relation_name,
+                            related_resource_id=related_resource_id,
+                            relationship=relationship, _apimanager=manager,
+                            **kw)
+            except ValueError:
+                pass
+        message = ('Model {0} is not known to any APIManager'
+                   ' objects; maybe you have not called'
+                   ' APIManager.create_api() for this model.').format(model)
+        raise ValueError(message)
+
+
+class SerializerFinder(KnowsAPIManagers, Singleton):
+    """The singleton class that backs the :func:`serializer_for` function."""
+
+    def __call__(self, model, _apimanager=None, **kw):
+        if _apimanager is not None:
+            if model not in _apimanager.created_apis_for:
+                message = ('APIManager {0} has not created an API for model '
+                           ' {1}').format(_apimanager, model)
+                raise ValueError(message)
+            return _apimanager.serializer_for(model, **kw)
+        for manager in self.created_managers:
+            try:
+                return self(model, _apimanager=manager, **kw)
+            except ValueError:
+                pass
+        message = ('Model {0} is not known to any APIManager'
+                   ' objects; maybe you have not called'
+                   ' APIManager.create_api() for this model.').format(model)
+        raise ValueError(message)
+
+
+class PrimaryKeyFinder(KnowsAPIManagers, Singleton):
+    """The singleton class that backs the :func:`primary_key_for` function."""
+
+    def __call__(self, instance_or_model, _apimanager=None, **kw):
+        if isinstance(instance_or_model, type):
+            model = instance_or_model
         else:
-            return query
+            model = instance_or_model.__class__
+
+        if _apimanager is not None:
+            managers_to_search = [_apimanager]
+        else:
+            managers_to_search = self.created_managers
+        for manager in managers_to_search:
+            if model in manager.created_apis_for:
+                primary_key = manager.primary_key_for(model, **kw)
+                break
+        else:
+            message = ('Model "{0}" is not known to {1}; maybe you have not'
+                       ' called APIManager.create_api() for this model?')
+            if _apimanager is not None:
+                manager_string = 'APIManager "{0}"'.format(_apimanager)
+            else:
+                manager_string = 'any APIManager objects'
+            message = message.format(model, manager_string)
+            raise ValueError(message)
+
+        # If `APIManager.create_api(model)` was called without providing
+        # a value for the `primary_key` keyword argument, then we must
+        # compute the primary key name from the model directly.
+        if primary_key is None:
+            pk_names = primary_key_names(model)
+            primary_key = 'id' if 'id' in pk_names else pk_names[0]
+        return primary_key
+
+
+#: Returns the URL for the specified model, similar to :func:`flask.url_for`.
+#:
+#: `model` is a SQLAlchemy model class. This should be a model on which
+#: :meth:`APIManager.create_api_blueprint` (or :meth:`APIManager.create_api`)
+#: has been invoked previously. If no API has been created for it, this
+#: function raises a `ValueError`.
+#:
+#: If `_apimanager` is not ``None``, it must be an instance of
+#: :class:`APIManager`. Restrict our search for endpoints exposing `model` to
+#: only endpoints created by the specified :class:`APIManager` instance.
+#:
+#: The `resource_id`, `relation_name`, and `relationresource_id` keyword
+#: arguments allow you to get the URL for a more specific sub-resource.
+#:
+#: For example, suppose you have a model class ``Person`` and have created the
+#: appropriate Flask application and SQLAlchemy session::
+#:
+#:     >>> manager = APIManager(app, session=session)
+#:     >>> manager.create_api(Person, collection_name='people')
+#:     >>> url_for(Person, resource_id=3)
+#:     'http://example.com/api/people/3'
+#:     >>> url_for(Person, resource_id=3, relation_name=computers)
+#:     'http://example.com/api/people/3/computers'
+#:     >>> url_for(Person, resource_id=3, relation_name=computers,
+#:     ...         related_resource_id=9)
+#:     'http://example.com/api/people/3/computers/9'
+#:
+#: If a `resource_id` and a `relation_name` are provided, and you wish
+#: to determine the relationship endpoint URL instead of the related
+#: resource URL, set the `relationship` keyword argument to ``True``::
+#:
+#:     >>> url_for(Person, resource_id=3, relation_name=computers,
+#:     ...         relationship=True)
+#:     'http://example.com/api/people/3/relatonships/computers'
+#:
+#: The remaining keyword arguments, `kw`, are passed directly on to
+#: :func:`flask.url_for`.
+#:
+#: Since this function creates absolute URLs to resources linked to the given
+#: instance, it must be called within a `Flask request context`_.
+#:
+#:  .. _Flask request context: http://flask.pocoo.org/docs/0.10/reqcontext/
+#:
+url_for = UrlFinder()
+
+#: Returns the collection name for the specified model, as specified by the
+#: ``collection_name`` keyword argument to :meth:`APIManager.create_api` when
+#: it was previously invoked on the model.
+#:
+#: `model` is a SQLAlchemy model class. This should be a model on which
+#: :meth:`APIManager.create_api_blueprint` (or :meth:`APIManager.create_api`)
+#: has been invoked previously. If no API has been created for it, this
+#: function raises a `ValueError`.
+#:
+#: If `_apimanager` is not ``None``, it must be an instance of
+#: :class:`APIManager`. Restrict our search for endpoints exposing `model` to
+#: only endpoints created by the specified :class:`APIManager` instance.
+#:
+#: For example, suppose you have a model class ``Person`` and have created the
+#: appropriate Flask application and SQLAlchemy session::
+#:
+#:     >>> from mymodels import Person
+#:     >>> manager = APIManager(app, session=session)
+#:     >>> manager.create_api(Person, collection_name='people')
+#:     >>> collection_name(Person)
+#:     'people'
+#:
+#: This function is the inverse of :func:`model_for`::
+#:
+#:     >>> manager.collection_name(manager.model_for('people'))
+#:     'people'
+#:     >>> manager.model_for(manager.collection_name(Person))
+#:     <class 'mymodels.Person'>
+#:
+collection_name = CollectionNameFinder()
+
+#: Returns the callable serializer object for the specified model, as
+#: specified by the `serializer` keyword argument to
+#: :meth:`APIManager.create_api` when it was previously invoked on the
+#: model.
+#:
+#: `model` is a SQLAlchemy model class. This should be a model on which
+#: :meth:`APIManager.create_api_blueprint` (or :meth:`APIManager.create_api`)
+#: has been invoked previously. If no API has been created for it, this
+#: function raises a `ValueError`.
+#:
+#: If `_apimanager` is not ``None``, it must be an instance of
+#: :class:`APIManager`. Restrict our search for endpoints exposing
+#: `model` to only endpoints created by the specified
+#: :class:`APIManager` instance.
+#:
+#: For example, suppose you have a model class ``Person`` and have
+#: created the appropriate Flask application and SQLAlchemy session::
+#:
+#:     >>> from mymodels import Person
+#:     >>> def my_serializer(model, *args, **kw):
+#:     ...     # return something cool here...
+#:     ...     return {}
+#:     ...
+#:     >>> manager = APIManager(app, session=session)
+#:     >>> manager.create_api(Person, serializer=my_serializer)
+#:     >>> serializer_for(Person)
+#:     <function my_serializer at 0x...>
+#:
+serializer_for = SerializerFinder()
+
+#: Returns the model corresponding to the given collection name, as specified
+#: by the ``collection_name`` keyword argument to :meth:`APIManager.create_api`
+#: when it was previously invoked on the model.
+#:
+#: `collection_name` is a string corresponding to the "type" of a model. This
+#: should be a model on which :meth:`APIManager.create_api_blueprint` (or
+#: :meth:`APIManager.create_api`) has been invoked previously. If no API has
+#: been created for it, this function raises a `ValueError`.
+#:
+#: If `_apimanager` is not ``None``, it must be an instance of
+#: :class:`APIManager`. Restrict our search for endpoints exposing `model` to
+#: only endpoints created by the specified :class:`APIManager` instance.
+#:
+#: For example, suppose you have a model class ``Person`` and have created the
+#: appropriate Flask application and SQLAlchemy session::
+#:
+#:     >>> from mymodels import Person
+#:     >>> manager = APIManager(app, session=session)
+#:     >>> manager.create_api(Person, collection_name='people')
+#:     >>> model_for('people')
+#:     <class 'mymodels.Person'>
+#:
+#: This function is the inverse of :func:`collection_name`::
+#:
+#:     >>> manager.collection_name(manager.model_for('people'))
+#:     'people'
+#:     >>> manager.model_for(manager.collection_name(Person))
+#:     <class 'mymodels.Person'>
+#:
+model_for = ModelFinder()
+
+#: Returns the primary key to be used for the given model or model instance,
+#: as specified by the ``primary_key`` keyword argument to
+#: :meth:`APIManager.create_api` when it was previously invoked on the model.
+#:
+#: `primary_key` is a string corresponding to the primary key identifier
+#: to be used by flask-restless for a model. If no primary key has been set
+#: at the flask-restless level (by using the ``primary_key`` keyword argument
+#: when calling :meth:`APIManager.create_api_blueprint`, the model's primary
+#: key will be returned. If no API has been created for the model, this
+#: function raises a `ValueError`.
+#:
+#: If `_apimanager` is not ``None``, it must be an instance of
+#: :class:`APIManager`. Restrict our search for endpoints exposing `model` to
+#: only endpoints created by the specified :class:`APIManager` instance.
+#:
+#: For example, suppose you have a model class ``Person`` and have created the
+#: appropriate Flask application and SQLAlchemy session::
+#:
+#:     >>> from mymodels import Person
+#:     >>> manager = APIManager(app, session=session)
+#:     >>> manager.create_api(Person, primary_key='name')
+#:     >>> primary_key_for(Person)
+#:     'name'
+#:     >>> my_person = Person(name="Bob")
+#:     >>> primary_key_for(my_person)
+#:     'name'
+#:
+#: This is in contrast to the typical default:
+#:
+#:     >>> manager = APIManager(app, session=session)
+#:     >>> manager.create_api(Person)
+#:     >>> primary_key_for(Person)
+#:     'id'
+#:
+primary_key_for = PrimaryKeyFinder()
