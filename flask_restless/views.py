@@ -48,6 +48,7 @@ from sqlalchemy.orm.query import Query
 from werkzeug.exceptions import BadRequest
 from werkzeug.exceptions import HTTPException
 from werkzeug.urls import url_quote_plus
+from shapely import wkb
 
 from .helpers import count
 from .helpers import evaluate_functions
@@ -216,6 +217,23 @@ def jsonify(*args, **kw):
     the response. ``headers`` must be a dictionary mapping strings to strings.
 
     """
+    for item in kw:
+        if isinstance(kw[item], list ):
+            print("inside", item)
+            for sub in kw[item]:
+                if "geometry" in sub and  hasattr(sub["geometry"], 'data'):
+                    subpoint = wkb.loads(bytes(sub["geometry"].data))
+                    sub["geometry"] = ""
+                    sub["geometry"]= {"coordinates": [subpoint.x, subpoint.y ], "type": "Point"}
+        if isinstance(kw[item], dict):
+            if "geometry" in kw[item] and hasattr(kw[item]["geometry"], 'data'):
+                dictpoint = wkb.loads(bytes(kw[item]["geometry"].data))
+                kw[item]["geometry"] = ""
+                kw[item]["geometry"] = {"coordinates": [dictpoint.x, dictpoint.y ], "type": "Point"}
+    if "geometry" in kw and hasattr(kw["geometry"], 'data'):
+        point = wkb.loads(bytes(kw["geometry"].data))
+        kw["geometry"]=""
+        kw["geometry"]= {"coordinates": [point.x, point.y ], "type": "Point"}
     response = _jsonify(*args, **kw)
     if 'headers' in kw:
         set_headers(response, kw['headers'])
